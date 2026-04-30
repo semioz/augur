@@ -1,7 +1,7 @@
 [project]
 name = "augur"
 version = "0.1.0"
-description = "Inference engine for transformer LLMs, written from scratch in PyTorch then Triton."
+description = "Qwen inference engine, written from scratch in PyTorch then Triton."
 requires-python = ">=3.12"
 dependencies = [
     "torch>=2.5",
