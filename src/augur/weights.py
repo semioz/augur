@@ -16,6 +16,7 @@ class RMSNorm:
 @dataclass(frozen=True)
 class Linear:
     weight: Tensor
+    bias: Tensor | None = None
 
 
 @dataclass(frozen=True)
@@ -61,7 +62,11 @@ def load_weights(
         return sd[name].to(device=device, dtype=dtype)
 
     def linear(prefix: str) -> Linear:
-        return Linear(weight=to(f"{prefix}.weight"))
+        bias_name = f"{prefix}.bias"
+        return Linear(
+            weight=to(f"{prefix}.weight"),
+            bias=to(bias_name) if bias_name in sd else None,
+        )
 
     def rms_norm(prefix: str) -> RMSNorm:
         return RMSNorm(weight=to(f"{prefix}.weight"))

@@ -97,13 +97,22 @@ def test_load_weights_reads_qwen_layout(tmp_path) -> None:
             cfg.num_attention_heads * cfg.head_dim,
             cfg.hidden_size,
         )
+        tensors[f"{prefix}.self_attn.q_proj.bias"] = torch.randn(
+            cfg.num_attention_heads * cfg.head_dim,
+        )
         tensors[f"{prefix}.self_attn.k_proj.weight"] = torch.randn(
             cfg.num_key_value_heads * cfg.head_dim,
             cfg.hidden_size,
         )
+        tensors[f"{prefix}.self_attn.k_proj.bias"] = torch.randn(
+            cfg.num_key_value_heads * cfg.head_dim,
+        )
         tensors[f"{prefix}.self_attn.v_proj.weight"] = torch.randn(
             cfg.num_key_value_heads * cfg.head_dim,
             cfg.hidden_size,
+        )
+        tensors[f"{prefix}.self_attn.v_proj.bias"] = torch.randn(
+            cfg.num_key_value_heads * cfg.head_dim,
         )
         tensors[f"{prefix}.self_attn.o_proj.weight"] = torch.randn(
             cfg.hidden_size,
@@ -131,6 +140,8 @@ def test_load_weights_reads_qwen_layout(tmp_path) -> None:
     torch.testing.assert_close(w.lm_head, w.embed_tokens)
     assert len(w.layers) == cfg.num_hidden_layers
     assert w.layers[0].self_attn.q.weight.shape == (cfg.hidden_size, cfg.hidden_size)
+    assert w.layers[0].self_attn.q.bias is not None
+    assert w.layers[0].self_attn.q.bias.shape == (cfg.hidden_size,)
     assert w.layers[0].self_attn.k.weight.shape == (cfg.head_dim, cfg.hidden_size)
     assert w.layers[0].mlp.gate.weight.shape == (cfg.intermediate_size, cfg.hidden_size)
     torch.testing.assert_close(

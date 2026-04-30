@@ -10,9 +10,21 @@ from augur.weights import Attention
 def attention(x: Tensor, w: Attention, cfg: QwenConfig, position_ids: Tensor) -> Tensor:
     batch, seq, _ = x.shape
     # we gotta move the heads dimension before the sequence dimension so attention can compute separate [seq, seq] scores for each head so tranpose
-    q = F.linear(x, w.q.weight).view(batch, seq, cfg.num_attention_heads, cfg.head_dim).transpose(1, 2)
-    k = F.linear(x, w.k.weight).view(batch, seq, cfg.num_key_value_heads, cfg.head_dim).transpose(1, 2)
-    v = F.linear(x, w.v.weight).view(batch, seq, cfg.num_key_value_heads, cfg.head_dim).transpose(1, 2)
+    q = (
+        F.linear(x, w.q.weight, w.q.bias)
+        .view(batch, seq, cfg.num_attention_heads, cfg.head_dim)
+        .transpose(1, 2)
+    )
+    k = (
+        F.linear(x, w.k.weight, w.k.bias)
+        .view(batch, seq, cfg.num_key_value_heads, cfg.head_dim)
+        .transpose(1, 2)
+    )
+    v = (
+        F.linear(x, w.v.weight, w.v.bias)
+        .view(batch, seq, cfg.num_key_value_heads, cfg.head_dim)
+        .transpose(1, 2)
+    )
 
     q, k = apply_rope(q, k, position_ids, cfg.rope_theta)
 
@@ -35,4 +47,4 @@ def attention(x: Tensor, w: Attention, cfg: QwenConfig, position_ids: Tensor) ->
     out = out.transpose(1, 2).contiguous()
     out = out.view(batch, seq, cfg.hidden_size)
 
-    return F.linear(out, w.o.weight)
+    return F.linear(out, w.o.weight, w.o.bias)
