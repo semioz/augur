@@ -1,13 +1,30 @@
-import torch
 import math
-from torch import Tensor
+
+import torch
 import torch.nn.functional as F
-from augur.rope import apply_rope
+from torch import Tensor
 
 from augur.config import QwenConfig
+from augur.kv_cache import KVCache, append_kv
+from augur.rope import apply_rope
 from augur.weights import Attention
 
-def attention(x: Tensor, w: Attention, cfg: QwenConfig, position_ids: Tensor) -> Tensor:
+
+def _causal_mask(query_len: int, key_len: int, device: torch.device) -> Tensor:
+    past_len = key_len - query_len
+    query_positions = torch.arange(query_len, device=device).unsqueeze(-1) + past_len
+    key_positions = torch.arange(key_len, device=device).unsqueeze(0)
+    return key_positions > query_positions
+
+
+def attention(
+    x: Tensor,
+    w: Attention,
+    cfg: QwenConfig,
+    position_ids: Tensor,
+    cache: KVCache | None = None,
+    layer_idx: int | None = None,
+) -> Tensor:
     batch, seq, _ = x.shape
     # we gotta move the heads dimension before the sequence dimension so attention can compute separate [seq, seq] scores for each head so tranpose
     q = (
@@ -28,16 +45,18 @@ def attention(x: Tensor, w: Attention, cfg: QwenConfig, position_ids: Tensor) ->
 
     q, k = apply_rope(q, k, position_ids, cfg.rope_theta)
 
+    if cache is not None:
+        if layer_idx is None:
+            raise ValueError("layer_idx is required when cache is provided")
+        k, v = append_kv(cache, layer_idx, k, v)
+
     # qwen uses GQA so we repeat each shared K/V head to match the number of query heads
     k = k.repeat_interleave(cfg.num_key_value_groups, dim=1)
     v = v.repeat_interleave(cfg.num_key_value_groups, dim=1)
 
     scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(cfg.head_dim)
     # leaving the upper triangular part of matrix for causal mask, putting -inf for zeroed ones to do softmax later
-    mask = torch.triu(
-        torch.ones(seq, seq, device=x.device, dtype=torch.bool),
-        diagonal=1
-    )
+    mask = _causal_mask(seq, k.shape[2], x.device)
     scores = scores.masked_fill(mask, float("-inf"))
 
     probs = torch.softmax(scores, dim=-1, dtype=torch.float32).to(q.dtype)

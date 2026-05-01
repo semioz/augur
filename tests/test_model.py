@@ -4,6 +4,7 @@ from transformers import Qwen2Config as HFQwen2Config
 from transformers.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM
 
 from augur.config import QwenConfig
+from augur.kv_cache import new_kv_cache
 from augur.model import model
 from augur.rms_norm import rms_norm
 from augur.weights import Attention, DecoderLayer, Linear, MLP, RMSNorm, Weights
@@ -152,3 +153,18 @@ def test_model_matches_hf_qwen() -> None:
         rtol=1e-5,
         atol=1e-5,
     )
+
+
+def test_model_with_cache_matches_full_model_last_token() -> None:
+    cfg = _tiny_config_with_layer()
+    torch.manual_seed(0)
+    w = _build_weights(cfg)
+    input_ids = torch.tensor([[1, 2, 3, 4], [5, 6, 7, 8]])
+
+    full = model(input_ids, w, cfg)
+
+    cache = new_kv_cache(cfg.num_hidden_layers)
+    model(input_ids[:, :3], w, cfg, cache=cache)
+    cached_last = model(input_ids[:, 3:], w, cfg, cache=cache, position_ids=torch.full((2, 1), 3))
+
+    torch.testing.assert_close(cached_last, full[:, 3:, :], rtol=1e-5, atol=1e-5)

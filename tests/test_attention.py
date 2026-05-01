@@ -9,6 +9,7 @@ from transformers.models.qwen2.modeling_qwen2 import Qwen2Attention, Qwen2Rotary
 
 from augur.attention import attention
 from augur.config import QwenConfig
+from augur.kv_cache import new_kv_cache
 from augur.weights import Attention, Linear
 
 
@@ -101,3 +102,24 @@ def test_attention_preserves_shape() -> None:
     position_ids = torch.arange(7).expand(3, -1)
 
     assert attention(x, w, cfg, position_ids).shape == x.shape
+
+
+def test_attention_with_cache_matches_full_attention_last_token() -> None:
+    cfg = _tiny_config()
+    torch.manual_seed(0)
+    w = Attention(
+        q=Linear(torch.randn(cfg.hidden_size, cfg.hidden_size)),
+        k=Linear(torch.randn(cfg.num_key_value_heads * cfg.head_dim, cfg.hidden_size)),
+        v=Linear(torch.randn(cfg.num_key_value_heads * cfg.head_dim, cfg.hidden_size)),
+        o=Linear(torch.randn(cfg.hidden_size, cfg.hidden_size)),
+    )
+    x = torch.randn(2, 5, cfg.hidden_size)
+    position_ids = torch.arange(5).expand(2, -1)
+
+    full = attention(x, w, cfg, position_ids)
+
+    cache = new_kv_cache(num_layers=1)
+    attention(x[:, :4, :], w, cfg, position_ids[:, :4], cache=cache, layer_idx=0)
+    cached_last = attention(x[:, 4:, :], w, cfg, position_ids[:, 4:], cache=cache, layer_idx=0)
+
+    torch.testing.assert_close(cached_last, full[:, 4:, :], rtol=1e-5, atol=1e-5)

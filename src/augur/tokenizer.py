@@ -36,21 +36,30 @@ def _get_pairs(word: tuple[str, ...]) -> set[tuple[str, str]]:
     return {(word[i], word[i + 1]) for i in range(len(word) - 1)}
 
 class Tokenizer:
-    def __init__(self, vocab: dict[str, int], merges: list[tuple[str, str]]) -> None:
-        self.encoder = vocab
-        self.decoder = {v: k for k, v in vocab.items()}
+    def __init__(
+        self,
+        vocab: dict[str, int],
+        merges: list[tuple[str, str]],
+        special_tokens: dict[str, int] | None = None,
+    ) -> None:
+        special_tokens = special_tokens or {}
+        self.encoder = {**vocab, **special_tokens}
+        self.decoder = {v: k for k, v in self.encoder.items()}
+        self.special_ids = set(special_tokens.values())
         self.bpe_ranks = {pair: i for i, pair in enumerate(merges)}
         self._cache: dict[str, str] = {}
 
     @classmethod
-    def from_files(cls, vocab_path: Path, merges_path: Path) -> "Tokenizer":
-        vocab: dict[str, int] = json.loads(vocab_path.read_text(encoding="utf-8"))
+    def from_pretrained(cls, model_dir: Path) -> "Tokenizer":
+        vocab: dict[str, int] = json.loads((model_dir / "vocab.json").read_text(encoding="utf-8"))
         merges: list[tuple[str, str]] = []
-        for line in merges_path.read_text(encoding="utf-8").splitlines()[1:]:
+        for line in (model_dir / "merges.txt").read_text(encoding="utf-8").splitlines()[1:]:
             if line:
                 a, b = line.split()
                 merges.append((a, b))
-        return cls(vocab, merges)
+        cfg = json.loads((model_dir / "tokenizer_config.json").read_text(encoding="utf-8"))
+        special = {entry["content"]: int(tid) for tid, entry in cfg.get("added_tokens_decoder", {}).items()}
+        return cls(vocab, merges, special_tokens=special)
 
     def _bpe(self, token: str) -> str:
         if token in self._cache:
@@ -96,6 +105,7 @@ class Tokenizer:
                 ids.append(self.encoder[piece])
         return ids
 
-    def decode(self, ids: list[int]) -> str:
-        text = "".join(self.decoder[i] for i in ids)
+    def decode(self, ids: list[int], skip_special: bool = True) -> str:
+        pieces = [self.decoder[i] for i in ids if not (skip_special and i in self.special_ids)]
+        text = "".join(pieces)
         return bytearray(_BYTE_DECODER[c] for c in text).decode("utf-8", errors="replace")
