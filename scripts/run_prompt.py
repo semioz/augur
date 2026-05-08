@@ -20,7 +20,14 @@ def main() -> None:
     weights = load_weights(MODEL_DIR / "model.safetensors", cfg, device=device, dtype=dtype)
 
     input_ids = torch.tensor([tokenizer.encode(prompt)], device=device)
-    output_ids = generate(input_ids, weights, cfg, max_new_tokens=200, use_cache=True)
+    output_ids = generate(
+        input_ids,
+        weights,
+        cfg,
+        max_new_tokens=200,
+        use_cache=True,
+        eos_token_id=tokenizer.eos_token_id,
+    )
 
     print(tokenizer.decode(output_ids[0].tolist()))
 

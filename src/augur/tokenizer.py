@@ -41,11 +41,14 @@ class Tokenizer:
         vocab: dict[str, int],
         merges: list[tuple[str, str]],
         special_tokens: dict[str, int] | None = None,
+        eos_token: str | None = None,
     ) -> None:
         special_tokens = special_tokens or {}
         self.encoder = {**vocab, **special_tokens}
         self.decoder = {v: k for k, v in self.encoder.items()}
         self.special_ids = set(special_tokens.values())
+        self.eos_token = eos_token
+        self.eos_token_id = self.encoder.get(eos_token) if eos_token is not None else None
         self.bpe_ranks = {pair: i for i, pair in enumerate(merges)}
         self._cache: dict[str, str] = {}
 
@@ -59,7 +62,7 @@ class Tokenizer:
                 merges.append((a, b))
         cfg = json.loads((model_dir / "tokenizer_config.json").read_text(encoding="utf-8"))
         special = {entry["content"]: int(tid) for tid, entry in cfg.get("added_tokens_decoder", {}).items()}
-        return cls(vocab, merges, special_tokens=special)
+        return cls(vocab, merges, special_tokens=special, eos_token=cfg.get("eos_token"))
 
     def _bpe(self, token: str) -> str:
         if token in self._cache:

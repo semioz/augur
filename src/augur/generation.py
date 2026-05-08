@@ -13,12 +13,15 @@ def generate(
     cfg: QwenConfig,
     max_new_tokens: int,
     use_cache: bool = False,
+    eos_token_id: int | None = None,
 ) -> Tensor:
     if not use_cache:
         for _ in range(max_new_tokens):
             logits = model(input_ids, w, cfg)
             next_token = logits[:, -1, :].argmax(dim=-1, keepdim=True)
             input_ids = torch.cat((input_ids, next_token), dim=1)
+            if _is_eos(next_token, eos_token_id):
+                break
         return input_ids
 
     if max_new_tokens == 0:
@@ -40,6 +43,8 @@ def generate(
     for step in range(max_new_tokens):
         next_token = logits[:, -1, :].argmax(dim=-1, keepdim=True)
         input_ids = torch.cat((input_ids, next_token), dim=1)
+        if _is_eos(next_token, eos_token_id):
+            break
         if step == max_new_tokens - 1:
             break
         position_ids = torch.full(
@@ -50,3 +55,9 @@ def generate(
         )
         logits = model(next_token, w, cfg, cache=cache, position_ids=position_ids)
     return input_ids
+
+
+def _is_eos(next_token: Tensor, eos_token_id: int | None) -> bool:
+    if eos_token_id is None:
+        return False
+    return bool(torch.all(next_token == eos_token_id).item())

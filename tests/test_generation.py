@@ -57,6 +57,36 @@ def test_generate_zero_new_tokens_returns_input() -> None:
     assert output is input_ids
 
 
+def test_generate_stops_when_eos_token_is_selected(monkeypatch) -> None:
+    cfg = QwenConfig(
+        vocab_size=8,
+        hidden_size=4,
+        intermediate_size=8,
+        num_hidden_layers=0,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+    )
+    calls: list[torch.Tensor] = []
+    greedy_tokens = [5, 3, 7]
+
+    def fake_model(input_ids: torch.Tensor, w: object, cfg: QwenConfig) -> torch.Tensor:
+        calls.append(input_ids.clone())
+        logits = torch.zeros(input_ids.shape[0], input_ids.shape[1], cfg.vocab_size)
+        logits[:, -1, greedy_tokens[len(calls) - 1]] = 1.0
+        return logits
+
+    monkeypatch.setattr(generation, "model", fake_model)
+
+    input_ids = torch.tensor([[1, 2]])
+    output = generation.generate(input_ids, w=object(), cfg=cfg, max_new_tokens=5, eos_token_id=3)
+
+    assert output.tolist() == [[1, 2, 5, 3]]
+    assert [call.tolist() for call in calls] == [
+        [[1, 2]],
+        [[1, 2, 5]],
+    ]
+
+
 def test_generate_can_use_cache(monkeypatch) -> None:
     cfg = QwenConfig(
         vocab_size=8,
@@ -94,3 +124,46 @@ def test_generate_can_use_cache(monkeypatch) -> None:
     assert output.tolist() == [[1, 2, 5, 6, 7]]
     assert seen_shapes == [(1, 2), (1, 1), (1, 1)]
     assert seen_cache_shapes == [(2, 1, 1, 5, 2)] * 3
+
+
+def test_generate_with_cache_stops_when_eos_token_is_selected(monkeypatch) -> None:
+    cfg = QwenConfig(
+        vocab_size=8,
+        hidden_size=4,
+        intermediate_size=8,
+        num_hidden_layers=2,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+    )
+    seen_shapes: list[tuple[int, int]] = []
+    greedy_tokens = [5, 3, 7]
+
+    def fake_model(
+        input_ids: torch.Tensor,
+        w: object,
+        cfg: QwenConfig,
+        cache: object | None = None,
+        position_ids: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        assert cache is not None
+        assert position_ids is not None
+        seen_shapes.append(tuple(input_ids.shape))
+        logits = torch.zeros(input_ids.shape[0], input_ids.shape[1], cfg.vocab_size)
+        logits[:, -1, greedy_tokens[len(seen_shapes) - 1]] = 1.0
+        return logits
+
+    monkeypatch.setattr(generation, "model", fake_model)
+
+    input_ids = torch.tensor([[1, 2]])
+    weights = SimpleNamespace(embed_tokens=torch.empty(0, dtype=torch.float32))
+    output = generation.generate(
+        input_ids,
+        w=weights,
+        cfg=cfg,
+        max_new_tokens=5,
+        use_cache=True,
+        eos_token_id=3,
+    )
+
+    assert output.tolist() == [[1, 2, 5, 3]]
+    assert seen_shapes == [(1, 2), (1, 1)]

@@ -17,6 +17,7 @@ The goal is to mirror the real Qwen inference path closely enough that the model
 - **Decoder blocks**: mirrors the transformer block structure: norm, attention, residual, norm, MLP, residual.
 - **Full forward pass**: turns token ids into logits through embeddings, decoder layers, final norm, and LM head.
 - **Greedy generation**: generates text by repeatedly choosing the highest-probability next token.
+- **EOS stopping**: stops generation early when the model emits the configured end-of-sequence token.
 - **Prefill/decode split**: processes the prompt once, then decodes one token at a time.
 - **Preallocated KV-cache**: stores key/value tensors in fixed cache memory instead of recomputing the whole prompt every token.
 - **Cache benchmarking**: measures cached vs uncached generation speed, prefill time, decode time, and tokens/sec.
@@ -46,7 +47,6 @@ uv run ruff check .
 ## Not Yet
 
 - Only Qwen2.5-0.5B is targeted right now.
-- No EOS stopping yet.
 - No temperature, top-k, or top-p sampling yet.
 - No batching with padding masks yet.
 - No Triton/CUDA kernels yet.
