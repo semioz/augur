@@ -118,7 +118,13 @@ def test_attention_with_cache_matches_full_attention_last_token() -> None:
 
     full = attention(x, w, cfg, position_ids)
 
-    cache = new_kv_cache(num_layers=1)
+    cache = new_kv_cache(
+        cfg,
+        batch_size=x.shape[0],
+        max_seq_len=x.shape[1],
+        device=x.device,
+        dtype=x.dtype,
+    )
     attention(x[:, :4, :], w, cfg, position_ids[:, :4], cache=cache, layer_idx=0)
     cached_last = attention(x[:, 4:, :], w, cfg, position_ids[:, 4:], cache=cache, layer_idx=0)
 

@@ -19,8 +19,8 @@ def model(
     batch, seq = input_ids.shape
     if position_ids is None:
         past_len = 0
-        if cache is not None and cache.keys and cache.keys[0] is not None:
-            past_len = cache.keys[0].shape[2]
+        if cache is not None:
+            past_len = cache.seq_len
         position_ids = torch.arange(
             past_len,
             past_len + seq,

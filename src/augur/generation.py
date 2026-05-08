@@ -24,7 +24,13 @@ def generate(
     if max_new_tokens == 0:
         return input_ids
 
-    cache = new_kv_cache(cfg.num_hidden_layers)
+    cache = new_kv_cache(
+        cfg,
+        batch_size=input_ids.shape[0],
+        max_seq_len=input_ids.shape[1] + max_new_tokens,
+        device=input_ids.device,
+        dtype=w.embed_tokens.dtype,
+    )
     position_ids = torch.arange(input_ids.shape[1], device=input_ids.device).expand(
         input_ids.shape[0],
         -1,

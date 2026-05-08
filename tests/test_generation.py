@@ -4,6 +4,7 @@ Run with:
 """
 
 import torch
+from types import SimpleNamespace
 
 import augur.generation as generation
 from augur.config import QwenConfig
@@ -67,6 +68,7 @@ def test_generate_can_use_cache(monkeypatch) -> None:
     )
     seen_shapes: list[tuple[int, int]] = []
     greedy_tokens = [5, 6, 7]
+    seen_cache_shapes: list[tuple[int, ...]] = []
 
     def fake_model(
         input_ids: torch.Tensor,
@@ -77,6 +79,7 @@ def test_generate_can_use_cache(monkeypatch) -> None:
     ) -> torch.Tensor:
         assert cache is not None
         assert position_ids is not None
+        seen_cache_shapes.append(tuple(cache.keys.shape))
         seen_shapes.append(tuple(input_ids.shape))
         logits = torch.zeros(input_ids.shape[0], input_ids.shape[1], cfg.vocab_size)
         logits[:, -1, greedy_tokens[len(seen_shapes) - 1]] = 1.0
@@ -85,7 +88,9 @@ def test_generate_can_use_cache(monkeypatch) -> None:
     monkeypatch.setattr(generation, "model", fake_model)
 
     input_ids = torch.tensor([[1, 2]])
-    output = generation.generate(input_ids, w=object(), cfg=cfg, max_new_tokens=3, use_cache=True)
+    weights = SimpleNamespace(embed_tokens=torch.empty(0, dtype=torch.float32))
+    output = generation.generate(input_ids, w=weights, cfg=cfg, max_new_tokens=3, use_cache=True)
 
     assert output.tolist() == [[1, 2, 5, 6, 7]]
     assert seen_shapes == [(1, 2), (1, 1), (1, 1)]
+    assert seen_cache_shapes == [(2, 1, 1, 5, 2)] * 3

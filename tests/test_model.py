@@ -163,7 +163,13 @@ def test_model_with_cache_matches_full_model_last_token() -> None:
 
     full = model(input_ids, w, cfg)
 
-    cache = new_kv_cache(cfg.num_hidden_layers)
+    cache = new_kv_cache(
+        cfg,
+        batch_size=input_ids.shape[0],
+        max_seq_len=input_ids.shape[1],
+        device=input_ids.device,
+        dtype=w.embed_tokens.dtype,
+    )
     model(input_ids[:, :3], w, cfg, cache=cache)
     cached_last = model(input_ids[:, 3:], w, cfg, cache=cache, position_ids=torch.full((2, 1), 3))
 

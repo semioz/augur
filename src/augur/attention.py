@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from augur.config import QwenConfig
-from augur.kv_cache import KVCache, append_kv
+from augur.kv_cache import KVCache, write_kv
 from augur.rope import apply_rope
 from augur.weights import Attention
 
@@ -48,7 +48,7 @@ def attention(
     if cache is not None:
         if layer_idx is None:
             raise ValueError("layer_idx is required when cache is provided")
-        k, v = append_kv(cache, layer_idx, k, v)
+        k, v = write_kv(cache, layer_idx, position_ids, k, v)
 
     # qwen uses GQA so we repeat each shared K/V head to match the number of query heads
     k = k.repeat_interleave(cfg.num_key_value_groups, dim=1)
