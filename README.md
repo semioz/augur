@@ -23,6 +23,7 @@ The goal is to mirror the real Qwen inference path closely enough that the model
 - **Stop strings**: trims decoded CLI output at user-provided stop sequences.
 - **Prefill/decode split**: processes the prompt once, then decodes one token at a time.
 - **Preallocated KV-cache**: stores key/value tensors in fixed cache memory instead of recomputing the whole prompt every token.
+- **Manual prefix cache API**: can prefill and reuse a single-sequence prefix cache for cached generation.
 - **Static batched generation**: accepts multiple prompts in one fixed batch through the CLI.
 - **KV-cache memory accounting**: reports estimated cache memory for benchmark runs.
 - **Cache benchmarking**: measures cached vs uncached generation speed, prefill time, decode time, tokens/sec, and CSV output.
@@ -73,6 +74,7 @@ uv run ruff check .
 
 - Only Qwen2.5-0.5B is targeted right now.
 - No presence, frequency, or repetition penalties yet.
+- Prefix cache is core-only for now: batch size 1, cached generation only, no attention masks, no CLI flag yet.
 - No continuous batching scheduler yet.
 - No Triton/CUDA kernels yet.
 - No paged attention yet.

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import augur.generation as generation
 from augur.config import QwenConfig
+from augur.prefix_cache import PrefixCache, PrefixCacheEntry
 
 
 def test_generate_appends_greedy_tokens(monkeypatch) -> None:
@@ -460,3 +461,99 @@ def test_generate_with_cache_stops_each_batch_row_after_eos(monkeypatch) -> None
         [[3], [6]],
         [[3], [7]],
     ]
+
+
+def test_generate_with_cache_reuses_cached_prefix(monkeypatch) -> None:
+    cfg = QwenConfig(
+        vocab_size=8,
+        hidden_size=4,
+        intermediate_size=8,
+        num_hidden_layers=2,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+    )
+    prefix_cache = PrefixCache()
+    prefix_cache.add(
+        PrefixCacheEntry(
+            token_ids=torch.tensor([1, 2, 3]),
+            keys=torch.zeros(2, 1, 3, 2),
+            values=torch.zeros(2, 1, 3, 2),
+            logits=torch.zeros(1, 1, cfg.vocab_size),
+        )
+    )
+    seen_inputs: list[list[list[int]]] = []
+    seen_positions: list[list[list[int]]] = []
+    greedy_tokens = [5, 6]
+
+    def fake_model(
+        input_ids: torch.Tensor,
+        w: object,
+        cfg: QwenConfig,
+        cache: object | None = None,
+        position_ids: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        assert cache is not None
+        assert position_ids is not None
+        seen_inputs.append(input_ids.tolist())
+        seen_positions.append(position_ids.tolist())
+        logits = torch.zeros(input_ids.shape[0], input_ids.shape[1], cfg.vocab_size)
+        logits[:, -1, greedy_tokens[len(seen_inputs) - 1]] = 1.0
+        return logits
+
+    monkeypatch.setattr(generation, "model", fake_model)
+
+    output = generation.generate(
+        torch.tensor([[1, 2, 3, 4]]),
+        w=SimpleNamespace(embed_tokens=torch.empty(0, dtype=torch.float32)),
+        cfg=cfg,
+        max_new_tokens=2,
+        use_cache=True,
+        prefix_cache=prefix_cache,
+    )
+
+    assert output.tolist() == [[1, 2, 3, 4, 5, 6]]
+    assert seen_inputs == [[[4]], [[5]]]
+    assert seen_positions == [[[3]], [[4]]]
+
+
+def test_generate_rejects_prefix_cache_without_kv_cache() -> None:
+    cfg = QwenConfig(
+        vocab_size=8,
+        hidden_size=4,
+        intermediate_size=8,
+        num_hidden_layers=0,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+    )
+
+    with pytest.raises(ValueError, match="prefix_cache requires use_cache"):
+        generation.generate(
+            torch.tensor([[1, 2, 3]]),
+            w=object(),
+            cfg=cfg,
+            max_new_tokens=1,
+            use_cache=False,
+            prefix_cache=PrefixCache(),
+        )
+
+
+def test_generate_rejects_prefix_cache_with_attention_mask() -> None:
+    cfg = QwenConfig(
+        vocab_size=8,
+        hidden_size=4,
+        intermediate_size=8,
+        num_hidden_layers=0,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+    )
+
+    with pytest.raises(ValueError, match="prefix_cache does not support attention_mask"):
+        generation.generate(
+            torch.tensor([[1, 2, 3]]),
+            w=SimpleNamespace(embed_tokens=torch.empty(0, dtype=torch.float32)),
+            cfg=cfg,
+            max_new_tokens=1,
+            use_cache=True,
+            attention_mask=torch.tensor([[1, 1, 1]]),
+            prefix_cache=PrefixCache(),
+        )

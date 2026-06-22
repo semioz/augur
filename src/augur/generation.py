@@ -4,6 +4,7 @@ from torch import Tensor
 from augur.config import QwenConfig
 from augur.kv_cache import new_kv_cache
 from augur.model import model
+from augur.prefix_cache import PrefixCache, copy_prefix_into_cache
 from augur.sampling import sample_next_token
 from augur.weights import Weights
 
@@ -19,11 +20,16 @@ def generate(
     top_k: int | None = None,
     top_p: float | None = None,
     attention_mask: Tensor | None = None,
+    prefix_cache: PrefixCache | None = None,
 ) -> Tensor:
     if max_new_tokens < 0:
         raise ValueError("max_new_tokens must be non-negative")
     if attention_mask is not None:
         _validate_attention_mask(input_ids, attention_mask)
+    if prefix_cache is not None and not use_cache:
+        raise ValueError("prefix_cache requires use_cache=True")
+    if prefix_cache is not None and attention_mask is not None:
+        raise ValueError("prefix_cache does not support attention_mask yet")
     finished = _new_finished(input_ids, eos_token_id)
 
     if not use_cache:
@@ -53,6 +59,8 @@ def generate(
     if max_new_tokens == 0:
         return input_ids
 
+    prefix_entry = prefix_cache.longest_prefix(input_ids) if prefix_cache is not None else None
+
     cache = new_kv_cache(
         cfg,
         batch_size=input_ids.shape[0],
@@ -60,18 +68,38 @@ def generate(
         device=input_ids.device,
         dtype=w.embed_tokens.dtype,
     )
-    position_ids = torch.arange(input_ids.shape[1], device=input_ids.device).expand(
-        input_ids.shape[0],
-        -1,
-    )
-    logits = _model(
-        input_ids,
-        w,
-        cfg,
-        cache=cache,
-        position_ids=position_ids,
-        attention_mask=attention_mask,
-    )
+    if prefix_entry is None:
+        position_ids = torch.arange(input_ids.shape[1], device=input_ids.device).expand(
+            input_ids.shape[0],
+            -1,
+        )
+        logits = _model(
+            input_ids,
+            w,
+            cfg,
+            cache=cache,
+            position_ids=position_ids,
+            attention_mask=attention_mask,
+        )
+    else:
+        copy_prefix_into_cache(prefix_entry, cache)
+        suffix_ids = input_ids[:, prefix_entry.seq_len :]
+        if suffix_ids.shape[1] == 0:
+            logits = prefix_entry.logits.to(device=input_ids.device)
+        else:
+            position_ids = torch.arange(
+                prefix_entry.seq_len,
+                input_ids.shape[1],
+                device=input_ids.device,
+            ).expand(input_ids.shape[0], -1)
+            logits = _model(
+                suffix_ids,
+                w,
+                cfg,
+                cache=cache,
+                position_ids=position_ids,
+                attention_mask=attention_mask,
+            )
 
     for step in range(max_new_tokens):
         next_token = sample_next_token(
