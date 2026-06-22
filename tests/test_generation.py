@@ -4,6 +4,7 @@ Run with:
 """
 
 import torch
+import pytest
 from types import SimpleNamespace
 
 import augur.generation as generation
@@ -57,6 +58,20 @@ def test_generate_zero_new_tokens_returns_input() -> None:
     assert output is input_ids
 
 
+def test_generate_rejects_negative_max_new_tokens() -> None:
+    cfg = QwenConfig(
+        vocab_size=8,
+        hidden_size=4,
+        intermediate_size=8,
+        num_hidden_layers=0,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+    )
+
+    with pytest.raises(ValueError, match="max_new_tokens"):
+        generation.generate(torch.tensor([[1, 2]]), w=object(), cfg=cfg, max_new_tokens=-1)
+
+
 def test_generate_stops_when_eos_token_is_selected(monkeypatch) -> None:
     cfg = QwenConfig(
         vocab_size=8,
@@ -85,6 +100,95 @@ def test_generate_stops_when_eos_token_is_selected(monkeypatch) -> None:
         [[1, 2]],
         [[1, 2, 5]],
     ]
+
+
+def test_generate_uses_sampling_parameters(monkeypatch) -> None:
+    cfg = QwenConfig(
+        vocab_size=8,
+        hidden_size=4,
+        intermediate_size=8,
+        num_hidden_layers=0,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+    )
+    seen_sampling_args: list[tuple[float, int | None, float | None]] = []
+
+    def fake_model(input_ids: torch.Tensor, w: object, cfg: QwenConfig) -> torch.Tensor:
+        return torch.zeros(input_ids.shape[0], input_ids.shape[1], cfg.vocab_size)
+
+    def fake_sample_next_token(
+        logits: torch.Tensor,
+        temperature: float,
+        top_k: int | None,
+        top_p: float | None,
+    ) -> torch.Tensor:
+        seen_sampling_args.append((temperature, top_k, top_p))
+        return torch.tensor([[4]])
+
+    monkeypatch.setattr(generation, "model", fake_model)
+    monkeypatch.setattr(generation, "sample_next_token", fake_sample_next_token)
+
+    output = generation.generate(
+        torch.tensor([[1, 2]]),
+        w=object(),
+        cfg=cfg,
+        max_new_tokens=1,
+        temperature=0.8,
+        top_k=20,
+        top_p=0.9,
+    )
+
+    assert output.tolist() == [[1, 2, 4]]
+    assert seen_sampling_args == [(0.8, 20, 0.9)]
+
+
+def test_generate_with_cache_uses_sampling_parameters(monkeypatch) -> None:
+    cfg = QwenConfig(
+        vocab_size=8,
+        hidden_size=4,
+        intermediate_size=8,
+        num_hidden_layers=2,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+    )
+    seen_sampling_args: list[tuple[float, int | None, float | None]] = []
+
+    def fake_model(
+        input_ids: torch.Tensor,
+        w: object,
+        cfg: QwenConfig,
+        cache: object | None = None,
+        position_ids: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        assert cache is not None
+        assert position_ids is not None
+        return torch.zeros(input_ids.shape[0], input_ids.shape[1], cfg.vocab_size)
+
+    def fake_sample_next_token(
+        logits: torch.Tensor,
+        temperature: float,
+        top_k: int | None,
+        top_p: float | None,
+    ) -> torch.Tensor:
+        seen_sampling_args.append((temperature, top_k, top_p))
+        return torch.tensor([[4]])
+
+    monkeypatch.setattr(generation, "model", fake_model)
+    monkeypatch.setattr(generation, "sample_next_token", fake_sample_next_token)
+
+    output = generation.generate(
+        torch.tensor([[1, 2]]),
+        w=SimpleNamespace(embed_tokens=torch.empty(0, dtype=torch.float32)),
+        cfg=cfg,
+        max_new_tokens=1,
+        use_cache=True,
+        temperature=0.8,
+        top_k=20,
+        top_p=0.9,
+    )
+
+    assert output.tolist() == [[1, 2, 4]]
+    assert seen_sampling_args == [(0.8, 20, 0.9)]
 
 
 def test_generate_can_use_cache(monkeypatch) -> None:

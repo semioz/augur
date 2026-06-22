@@ -8,6 +8,7 @@ from torch import Tensor
 from augur.config import QwenConfig
 from augur.kv_cache import new_kv_cache
 from augur.model import model
+from augur.sampling import sample_next_token
 from augur.weights import Weights
 
 Clock = Callable[[], float]
@@ -109,7 +110,7 @@ def _benchmark_uncached_generate(
             lambda: model(output_ids, w, cfg),
         )
         decode_seconds += elapsed
-        next_token = logits[:, -1, :].argmax(dim=-1, keepdim=True)
+        next_token = sample_next_token(logits[:, -1, :])
         output_ids = torch.cat((output_ids, next_token), dim=1)
 
     return GenerationBenchmarkResult(
@@ -164,7 +165,7 @@ def _benchmark_cached_generate(
     decode_model_tokens = 0
 
     for step in range(max_new_tokens):
-        next_token = logits[:, -1, :].argmax(dim=-1, keepdim=True)
+        next_token = sample_next_token(logits[:, -1, :])
         output_ids = torch.cat((output_ids, next_token), dim=1)
         if step == max_new_tokens - 1:
             break
