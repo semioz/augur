@@ -102,6 +102,49 @@ def test_generate_stops_when_eos_token_is_selected(monkeypatch) -> None:
     ]
 
 
+def test_generate_stops_each_batch_row_after_eos(monkeypatch) -> None:
+    cfg = QwenConfig(
+        vocab_size=8,
+        hidden_size=4,
+        intermediate_size=8,
+        num_hidden_layers=0,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+    )
+    calls: list[torch.Tensor] = []
+    greedy_tokens = [
+        [3, 6],
+        [5, 7],
+        [5, 3],
+        [5, 5],
+        [5, 5],
+    ]
+
+    def fake_model(input_ids: torch.Tensor, w: object, cfg: QwenConfig) -> torch.Tensor:
+        calls.append(input_ids.clone())
+        logits = torch.zeros(input_ids.shape[0], input_ids.shape[1], cfg.vocab_size)
+        for row_idx, token_id in enumerate(greedy_tokens[len(calls) - 1]):
+            logits[row_idx, -1, token_id] = 1.0
+        return logits
+
+    monkeypatch.setattr(generation, "model", fake_model)
+
+    output = generation.generate(
+        torch.tensor([[1, 2], [4, 5]]),
+        w=object(),
+        cfg=cfg,
+        max_new_tokens=5,
+        eos_token_id=3,
+    )
+
+    assert output.tolist() == [[1, 2, 3, 3, 3], [4, 5, 6, 7, 3]]
+    assert [call.tolist() for call in calls] == [
+        [[1, 2], [4, 5]],
+        [[1, 2, 3], [4, 5, 6]],
+        [[1, 2, 3, 3], [4, 5, 6, 7]],
+    ]
+
+
 def test_generate_uses_sampling_parameters(monkeypatch) -> None:
     cfg = QwenConfig(
         vocab_size=8,
@@ -365,3 +408,55 @@ def test_generate_with_cache_stops_when_eos_token_is_selected(monkeypatch) -> No
 
     assert output.tolist() == [[1, 2, 5, 3]]
     assert seen_shapes == [(1, 2), (1, 1)]
+
+
+def test_generate_with_cache_stops_each_batch_row_after_eos(monkeypatch) -> None:
+    cfg = QwenConfig(
+        vocab_size=8,
+        hidden_size=4,
+        intermediate_size=8,
+        num_hidden_layers=2,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+    )
+    calls: list[torch.Tensor] = []
+    greedy_tokens = [
+        [3, 6],
+        [5, 7],
+        [5, 3],
+        [5, 5],
+        [5, 5],
+    ]
+
+    def fake_model(
+        input_ids: torch.Tensor,
+        w: object,
+        cfg: QwenConfig,
+        cache: object | None = None,
+        position_ids: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        assert cache is not None
+        assert position_ids is not None
+        calls.append(input_ids.clone())
+        logits = torch.zeros(input_ids.shape[0], input_ids.shape[1], cfg.vocab_size)
+        for row_idx, token_id in enumerate(greedy_tokens[len(calls) - 1]):
+            logits[row_idx, -1, token_id] = 1.0
+        return logits
+
+    monkeypatch.setattr(generation, "model", fake_model)
+
+    output = generation.generate(
+        torch.tensor([[1, 2], [4, 5]]),
+        w=SimpleNamespace(embed_tokens=torch.empty(0, dtype=torch.float32)),
+        cfg=cfg,
+        max_new_tokens=5,
+        use_cache=True,
+        eos_token_id=3,
+    )
+
+    assert output.tolist() == [[1, 2, 3, 3, 3], [4, 5, 6, 7, 3]]
+    assert [call.tolist() for call in calls] == [
+        [[1, 2], [4, 5]],
+        [[3], [6]],
+        [[3], [7]],
+    ]

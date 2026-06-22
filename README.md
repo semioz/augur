@@ -19,7 +19,7 @@ The goal is to mirror the real Qwen inference path closely enough that the model
 - **Full forward pass**: turns token ids into logits through embeddings, decoder layers, final norm, and LM head.
 - **Greedy generation**: generates text by repeatedly choosing the highest-probability next token.
 - **Sampling controls**: supports temperature, top-k, and top-p token selection.
-- **EOS stopping**: stops generation early when the model emits the configured end-of-sequence token.
+- **EOS stopping**: stops generation when each sequence emits the configured end-of-sequence token.
 - **Stop strings**: trims decoded CLI output at user-provided stop sequences.
 - **Prefill/decode split**: processes the prompt once, then decodes one token at a time.
 - **Preallocated KV-cache**: stores key/value tensors in fixed cache memory instead of recomputing the whole prompt every token.
@@ -73,7 +73,6 @@ uv run ruff check .
 
 - Only Qwen2.5-0.5B is targeted right now.
 - No presence, frequency, or repetition penalties yet.
-- No per-sequence stopping for finished batch rows yet.
 - No continuous batching scheduler yet.
 - No Triton/CUDA kernels yet.
 - No paged attention yet.

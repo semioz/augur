@@ -24,6 +24,7 @@ def generate(
         raise ValueError("max_new_tokens must be non-negative")
     if attention_mask is not None:
         _validate_attention_mask(input_ids, attention_mask)
+    finished = _new_finished(input_ids, eos_token_id)
 
     if not use_cache:
         for _ in range(max_new_tokens):
@@ -41,9 +42,11 @@ def generate(
                 top_k,
                 top_p,
             )
+            next_token = _force_finished_tokens(next_token, finished, eos_token_id)
             input_ids = torch.cat((input_ids, next_token), dim=1)
             attention_mask = _append_attention_mask(attention_mask, next_token)
-            if _is_eos(next_token, eos_token_id):
+            finished = _update_finished(finished, next_token, eos_token_id)
+            if _all_finished(finished):
                 break
         return input_ids
 
@@ -77,13 +80,15 @@ def generate(
             top_k,
             top_p,
         )
+        next_token = _force_finished_tokens(next_token, finished, eos_token_id)
         input_ids = torch.cat((input_ids, next_token), dim=1)
         if attention_mask is not None:
             position_ids = attention_mask.to(torch.long).sum(dim=1, keepdim=True)
             attention_mask = _mark_attention_positions(attention_mask, position_ids)
         else:
             position_ids = None
-        if _is_eos(next_token, eos_token_id):
+        finished = _update_finished(finished, next_token, eos_token_id)
+        if _all_finished(finished):
             break
         if step == max_new_tokens - 1:
             break
@@ -172,7 +177,33 @@ def _decode_position_ids(input_ids: Tensor, attention_mask: Tensor | None) -> Te
     )
 
 
-def _is_eos(next_token: Tensor, eos_token_id: int | None) -> bool:
+def _new_finished(input_ids: Tensor, eos_token_id: int | None) -> Tensor | None:
     if eos_token_id is None:
+        return None
+    return torch.zeros(input_ids.shape[0], 1, device=input_ids.device, dtype=torch.bool)
+
+
+def _force_finished_tokens(
+    next_token: Tensor,
+    finished: Tensor | None,
+    eos_token_id: int | None,
+) -> Tensor:
+    if finished is None or eos_token_id is None:
+        return next_token
+    return torch.where(finished, torch.full_like(next_token, eos_token_id), next_token)
+
+
+def _update_finished(
+    finished: Tensor | None,
+    next_token: Tensor,
+    eos_token_id: int | None,
+) -> Tensor | None:
+    if finished is None or eos_token_id is None:
+        return finished
+    return finished | (next_token == eos_token_id)
+
+
+def _all_finished(finished: Tensor | None) -> bool:
+    if finished is None:
         return False
-    return bool(torch.all(next_token == eos_token_id).item())
+    return bool(torch.all(finished).item())
