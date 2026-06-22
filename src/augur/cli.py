@@ -11,6 +11,7 @@ from augur.benchmarking import (
 )
 from augur.config import QwenConfig
 from augur.generation import generate
+from augur.kv_cache import format_bytes, kv_cache_nbytes
 from augur.tokenizer import Tokenizer
 from augur.weights import load_weights
 
@@ -132,6 +133,17 @@ def run_bench(args: argparse.Namespace) -> None:
     print(f"device: {device}")
     print(f"dtype: {dtype}")
     print(f"max new tokens: {args.max_new_tokens}")
+    print(
+        "kv cache memory: "
+        + format_bytes(
+            kv_cache_nbytes(
+                cfg,
+                batch_size=input_ids.shape[0],
+                max_seq_len=input_ids.shape[1] + args.max_new_tokens,
+                dtype=dtype,
+            )
+        )
+    )
     print()
     print(format_benchmark_result(cached))
     if args.skip_uncached:

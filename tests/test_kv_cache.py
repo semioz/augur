@@ -4,9 +4,10 @@ Run with:
 """
 
 import torch
+import pytest
 
 from augur.config import QwenConfig
-from augur.kv_cache import new_kv_cache, write_kv
+from augur.kv_cache import format_bytes, kv_cache_nbytes, new_kv_cache, write_kv
 
 
 def tiny_cfg() -> QwenConfig:
@@ -35,6 +36,36 @@ def test_new_kv_cache_preallocates_all_layers() -> None:
     assert cache.values.shape == (2, 3, 1, 5, 4)
     assert cache.seq_len == 0
     assert cache.keys.dtype == torch.float32
+
+
+def test_kv_cache_nbytes_counts_keys_and_values() -> None:
+    cfg = QwenConfig(
+        vocab_size=16,
+        hidden_size=4,
+        intermediate_size=16,
+        num_hidden_layers=3,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+    )
+
+    assert kv_cache_nbytes(cfg, batch_size=2, max_seq_len=5, dtype=torch.float32) == 480
+    assert kv_cache_nbytes(cfg, batch_size=2, max_seq_len=5, dtype=torch.float16) == 240
+
+
+def test_kv_cache_nbytes_rejects_invalid_dimensions() -> None:
+    cfg = tiny_cfg()
+
+    with pytest.raises(ValueError, match="batch_size"):
+        kv_cache_nbytes(cfg, batch_size=0, max_seq_len=5, dtype=torch.float32)
+
+    with pytest.raises(ValueError, match="max_seq_len"):
+        kv_cache_nbytes(cfg, batch_size=1, max_seq_len=0, dtype=torch.float32)
+
+
+def test_format_bytes_uses_binary_units() -> None:
+    assert format_bytes(512) == "512 B"
+    assert format_bytes(1536) == "1.50 KiB"
+    assert format_bytes(1024**2) == "1.00 MiB"
 
 
 def test_write_kv_writes_positions_without_reallocating() -> None:

@@ -173,6 +173,7 @@ def test_bench_command_prints_text_results_and_comparison(monkeypatch, capsys) -
     assert seen_calls == [True, False]
     assert "device: cpu" in output
     assert "dtype: torch.float32" in output
+    assert "kv cache memory: 216.00 KiB" in output
     assert "cache: on" in output
     assert "cache: off" in output
     assert "cached speedup vs uncached total time" in output

@@ -37,6 +37,41 @@ def new_kv_cache(
     )
 
 
+def kv_cache_nbytes(
+    cfg: QwenConfig,
+    batch_size: int,
+    max_seq_len: int,
+    dtype: torch.dtype,
+) -> int:
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    if max_seq_len <= 0:
+        raise ValueError("max_seq_len must be positive")
+
+    elements_per_cache = (
+        cfg.num_hidden_layers
+        * batch_size
+        * cfg.num_key_value_heads
+        * max_seq_len
+        * cfg.head_dim
+    )
+    return elements_per_cache * torch.empty((), dtype=dtype).element_size() * 2
+
+
+def format_bytes(nbytes: int) -> str:
+    if nbytes < 0:
+        raise ValueError("nbytes must be non-negative")
+    if nbytes < 1024:
+        return f"{nbytes} B"
+
+    value = float(nbytes)
+    for unit in ("KiB", "MiB", "GiB", "TiB"):
+        value /= 1024
+        if abs(value) < 1024:
+            return f"{value:.2f} {unit}"
+    return f"{value:.2f} PiB"
+
+
 def write_kv(
     cache: KVCache,
     layer_idx: int,
