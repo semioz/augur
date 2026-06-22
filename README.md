@@ -29,7 +29,7 @@ The goal is to mirror the real Qwen inference path closely enough that the model
 ```bash
 uv sync
 uv run python scripts/download_weights.py
-uv run python scripts/run_prompt.py
+uv run augur generate --prompt "Write one short sentence about GPUs." --max-new-tokens 40
 ```
 
 Benchmark:
