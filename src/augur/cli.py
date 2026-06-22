@@ -49,12 +49,13 @@ def add_generate_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top-k", type=int, default=None)
     parser.add_argument("--top-p", type=float, default=None)
+    parser.add_argument("--stop", action="append", default=[])
     add_runtime_args(parser)
 
 
 def add_bench_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--model-dir", type=Path, default=MODEL_DIR)
-    parser.add_argument("--prompt", default=DEFAULT_PROMPT)
+    parser.add_argument("--prompt", action="append", default=None)
     parser.add_argument("--max-new-tokens", type=int, default=32)
     add_runtime_args(parser)
     parser.add_argument(
@@ -97,7 +98,10 @@ def run_generate(args: argparse.Namespace) -> None:
         attention_mask=attention_mask,
     )
 
-    generated_texts = decode_generated_texts(tokenizer, prompt_lengths, output_ids)
+    generated_texts = [
+        apply_stop_strings(text, args.stop)
+        for text in decode_generated_texts(tokenizer, prompt_lengths, output_ids)
+    ]
     if len(generated_texts) == 1:
         print(generated_texts[0])
         return
@@ -112,7 +116,8 @@ def run_bench(args: argparse.Namespace) -> None:
 
     tokenizer = Tokenizer.from_pretrained(args.model_dir)
     weights = load_weights(args.model_dir / "model.safetensors", cfg, device=device, dtype=dtype)
-    input_ids = torch.tensor([tokenizer.encode(args.prompt)], device=device)
+    prompts = args.prompt or [DEFAULT_PROMPT]
+    input_ids, attention_mask, _ = encode_prompts(tokenizer, prompts, device)
 
     cached = benchmark_generate(
         input_ids,
@@ -120,6 +125,7 @@ def run_bench(args: argparse.Namespace) -> None:
         cfg,
         max_new_tokens=args.max_new_tokens,
         use_cache=True,
+        attention_mask=attention_mask,
     )
     results = [cached]
     if not args.skip_uncached:
@@ -130,6 +136,7 @@ def run_bench(args: argparse.Namespace) -> None:
                 cfg,
                 max_new_tokens=args.max_new_tokens,
                 use_cache=False,
+                attention_mask=attention_mask,
             )
         )
 
@@ -139,6 +146,7 @@ def run_bench(args: argparse.Namespace) -> None:
 
     print(f"device: {device}")
     print(f"dtype: {dtype}")
+    print(f"batch size: {input_ids.shape[0]}")
     print(f"max new tokens: {args.max_new_tokens}")
     print(
         "kv cache memory: "
@@ -206,6 +214,13 @@ def decode_generated_texts(
         tokenizer.decode(output_ids[row_idx, prompt_width:].tolist()).lstrip()
         for row_idx in range(len(prompt_lengths))
     ]
+
+
+def apply_stop_strings(text: str, stop: list[str]) -> str:
+    stop_positions = [idx for stop_text in stop if (idx := text.find(stop_text)) != -1]
+    if not stop_positions:
+        return text
+    return text[: min(stop_positions)]
 
 
 def resolve_device(device: str) -> torch.device:

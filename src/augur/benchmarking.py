@@ -8,6 +8,12 @@ import torch
 from torch import Tensor
 
 from augur.config import QwenConfig
+from augur.generation import (
+    _append_attention_mask,
+    _mark_attention_positions,
+    _next_token_logits,
+    _validate_attention_mask,
+)
 from augur.kv_cache import new_kv_cache
 from augur.model import model
 from augur.sampling import sample_next_token
@@ -21,10 +27,22 @@ class GenerationBenchmarkResult:
     output_ids: Tensor
     use_cache: bool
     prompt_tokens: int
-    generated_tokens: int
+    generated_tokens_per_sequence: int
     prefill_seconds: float
     decode_seconds: float
-    decode_model_tokens: int
+    decode_model_tokens_per_sequence: int
+
+    @property
+    def batch_size(self) -> int:
+        return self.output_ids.shape[0]
+
+    @property
+    def total_generated_tokens(self) -> int:
+        return self.generated_tokens_per_sequence * self.batch_size
+
+    @property
+    def total_decode_model_tokens(self) -> int:
+        return self.decode_model_tokens_per_sequence * self.batch_size
 
     @property
     def total_seconds(self) -> float:
@@ -32,11 +50,11 @@ class GenerationBenchmarkResult:
 
     @property
     def decode_tokens_per_second(self) -> float:
-        return tokens_per_second(self.decode_model_tokens, self.decode_seconds)
+        return tokens_per_second(self.total_decode_model_tokens, self.decode_seconds)
 
     @property
     def total_tokens_per_second(self) -> float:
-        return tokens_per_second(self.generated_tokens, self.total_seconds)
+        return tokens_per_second(self.total_generated_tokens, self.total_seconds)
 
 
 def tokens_per_second(tokens: int, seconds: float) -> float:
@@ -51,14 +69,17 @@ def benchmark_generate(
     cfg: QwenConfig,
     max_new_tokens: int,
     use_cache: bool,
+    attention_mask: Tensor | None = None,
     clock: Clock = time.perf_counter,
 ) -> GenerationBenchmarkResult:
     if max_new_tokens < 0:
         raise ValueError("max_new_tokens must be non-negative")
+    if attention_mask is not None:
+        _validate_attention_mask(input_ids, attention_mask)
 
     if use_cache:
-        return _benchmark_cached_generate(input_ids, w, cfg, max_new_tokens, clock)
-    return _benchmark_uncached_generate(input_ids, w, cfg, max_new_tokens, clock)
+        return _benchmark_cached_generate(input_ids, w, cfg, max_new_tokens, attention_mask, clock)
+    return _benchmark_uncached_generate(input_ids, w, cfg, max_new_tokens, attention_mask, clock)
 
 
 def format_benchmark_result(result: GenerationBenchmarkResult) -> str:
@@ -71,15 +92,17 @@ def format_benchmark_result(result: GenerationBenchmarkResult) -> str:
     return "\n".join(
         [
             f"cache: {cache}",
-            f"prompt tokens: {result.prompt_tokens}",
-            f"generated tokens: {result.generated_tokens}",
+            f"batch size: {result.batch_size}",
+            f"prompt tokens/seq: {result.prompt_tokens}",
+            f"generated tokens/seq: {result.generated_tokens_per_sequence}",
+            f"total generated tokens: {result.total_generated_tokens}",
             f"prefill time: {prefill}",
             f"decode time: {result.decode_seconds:.4f}s",
             f"total time: {result.total_seconds:.4f}s",
             (
                 "decode tokens/sec: "
                 f"{result.decode_tokens_per_second:.2f} "
-                f"({result.decode_model_tokens} measured decode forwards)"
+                f"({result.total_decode_model_tokens} measured decode tokens)"
             ),
             f"total tokens/sec: {result.total_tokens_per_second:.2f}",
         ]
@@ -100,12 +123,15 @@ def format_benchmark_csv(results: Iterable[GenerationBenchmarkResult]) -> str:
         output,
         fieldnames=[
             "variant",
+            "batch_size",
             "prompt_tokens",
-            "generated_tokens",
+            "generated_tokens_per_sequence",
+            "total_generated_tokens",
             "prefill_seconds",
             "decode_seconds",
             "total_seconds",
-            "decode_model_tokens",
+            "decode_model_tokens_per_sequence",
+            "total_decode_model_tokens",
             "decode_tokens_per_second",
             "total_tokens_per_second",
         ],
@@ -116,12 +142,15 @@ def format_benchmark_csv(results: Iterable[GenerationBenchmarkResult]) -> str:
         writer.writerow(
             {
                 "variant": "cached" if result.use_cache else "uncached",
+                "batch_size": result.batch_size,
                 "prompt_tokens": result.prompt_tokens,
-                "generated_tokens": result.generated_tokens,
+                "generated_tokens_per_sequence": result.generated_tokens_per_sequence,
+                "total_generated_tokens": result.total_generated_tokens,
                 "prefill_seconds": f"{result.prefill_seconds:.6f}",
                 "decode_seconds": f"{result.decode_seconds:.6f}",
                 "total_seconds": f"{result.total_seconds:.6f}",
-                "decode_model_tokens": result.decode_model_tokens,
+                "decode_model_tokens_per_sequence": result.decode_model_tokens_per_sequence,
+                "total_decode_model_tokens": result.total_decode_model_tokens,
                 "decode_tokens_per_second": f"{result.decode_tokens_per_second:.6f}",
                 "total_tokens_per_second": f"{result.total_tokens_per_second:.6f}",
             }
@@ -135,6 +164,7 @@ def _benchmark_uncached_generate(
     w: Weights,
     cfg: QwenConfig,
     max_new_tokens: int,
+    attention_mask: Tensor | None,
     clock: Clock,
 ) -> GenerationBenchmarkResult:
     output_ids = input_ids
@@ -144,20 +174,21 @@ def _benchmark_uncached_generate(
         logits, elapsed = _time_forward(
             output_ids.device,
             clock,
-            lambda: model(output_ids, w, cfg),
+            lambda: _model(output_ids, w, cfg, attention_mask=attention_mask),
         )
         decode_seconds += elapsed
-        next_token = sample_next_token(logits[:, -1, :])
+        next_token = sample_next_token(_next_token_logits(logits, attention_mask))
         output_ids = torch.cat((output_ids, next_token), dim=1)
+        attention_mask = _append_attention_mask(attention_mask, next_token)
 
     return GenerationBenchmarkResult(
         output_ids=output_ids,
         use_cache=False,
         prompt_tokens=input_ids.shape[1],
-        generated_tokens=output_ids.shape[1] - input_ids.shape[1],
+        generated_tokens_per_sequence=output_ids.shape[1] - input_ids.shape[1],
         prefill_seconds=0.0,
         decode_seconds=decode_seconds,
-        decode_model_tokens=max_new_tokens,
+        decode_model_tokens_per_sequence=max_new_tokens,
     )
 
 
@@ -167,6 +198,7 @@ def _benchmark_cached_generate(
     w: Weights,
     cfg: QwenConfig,
     max_new_tokens: int,
+    attention_mask: Tensor | None,
     clock: Clock,
 ) -> GenerationBenchmarkResult:
     if max_new_tokens == 0:
@@ -174,10 +206,10 @@ def _benchmark_cached_generate(
             output_ids=input_ids,
             use_cache=True,
             prompt_tokens=input_ids.shape[1],
-            generated_tokens=0,
+            generated_tokens_per_sequence=0,
             prefill_seconds=0.0,
             decode_seconds=0.0,
-            decode_model_tokens=0,
+            decode_model_tokens_per_sequence=0,
         )
 
     cache = new_kv_cache(
@@ -194,7 +226,14 @@ def _benchmark_cached_generate(
     logits, prefill_seconds = _time_forward(
         input_ids.device,
         clock,
-        lambda: model(input_ids, w, cfg, cache=cache, position_ids=position_ids),
+        lambda: _model(
+            input_ids,
+            w,
+            cfg,
+            cache=cache,
+            position_ids=position_ids,
+            attention_mask=attention_mask,
+        ),
     )
 
     output_ids = input_ids
@@ -202,21 +241,34 @@ def _benchmark_cached_generate(
     decode_model_tokens = 0
 
     for step in range(max_new_tokens):
-        next_token = sample_next_token(logits[:, -1, :])
+        next_token = sample_next_token(_next_token_logits(logits, attention_mask))
         output_ids = torch.cat((output_ids, next_token), dim=1)
+        if attention_mask is not None:
+            position_ids = attention_mask.to(torch.long).sum(dim=1, keepdim=True)
+            attention_mask = _mark_attention_positions(attention_mask, position_ids)
+        else:
+            position_ids = None
         if step == max_new_tokens - 1:
             break
 
-        position_ids = torch.full(
-            (output_ids.shape[0], 1),
-            output_ids.shape[1] - 1,
-            device=output_ids.device,
-            dtype=torch.long,
-        )
+        if position_ids is None:
+            position_ids = torch.full(
+                (output_ids.shape[0], 1),
+                output_ids.shape[1] - 1,
+                device=output_ids.device,
+                dtype=torch.long,
+            )
         logits, elapsed = _time_forward(
             output_ids.device,
             clock,
-            lambda: model(next_token, w, cfg, cache=cache, position_ids=position_ids),
+            lambda: _model(
+                next_token,
+                w,
+                cfg,
+                cache=cache,
+                position_ids=position_ids,
+                attention_mask=attention_mask,
+            ),
         )
         decode_seconds += elapsed
         decode_model_tokens += 1
@@ -225,11 +277,29 @@ def _benchmark_cached_generate(
         output_ids=output_ids,
         use_cache=True,
         prompt_tokens=input_ids.shape[1],
-        generated_tokens=output_ids.shape[1] - input_ids.shape[1],
+        generated_tokens_per_sequence=output_ids.shape[1] - input_ids.shape[1],
         prefill_seconds=prefill_seconds,
         decode_seconds=decode_seconds,
-        decode_model_tokens=decode_model_tokens,
+        decode_model_tokens_per_sequence=decode_model_tokens,
     )
+
+
+def _model(
+    input_ids: Tensor,
+    w: Weights,
+    cfg: QwenConfig,
+    cache: object | None = None,
+    position_ids: Tensor | None = None,
+    attention_mask: Tensor | None = None,
+) -> Tensor:
+    kwargs = {}
+    if cache is not None:
+        kwargs["cache"] = cache
+    if position_ids is not None:
+        kwargs["position_ids"] = position_ids
+    if attention_mask is not None:
+        kwargs["attention_mask"] = attention_mask
+    return model(input_ids, w, cfg, **kwargs)
 
 
 def _time_forward(

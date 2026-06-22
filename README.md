@@ -13,15 +13,19 @@ The goal is to mirror the real Qwen inference path closely enough that the model
 - **RoPE**: applies rotary position embeddings to query and key tensors so attention understands token positions.
 - **Grouped-query attention**: supports Qwen's layout where many query heads share fewer key/value heads.
 - **Causal masking**: prevents each token from attending to future tokens during generation.
+- **Padding masks**: supports right-padded prompt batches so padded tokens do not affect attention or next-token selection.
 - **Qwen MLP**: implements the SwiGLU feed-forward path used by Qwen.
 - **Decoder blocks**: mirrors the transformer block structure: norm, attention, residual, norm, MLP, residual.
 - **Full forward pass**: turns token ids into logits through embeddings, decoder layers, final norm, and LM head.
 - **Greedy generation**: generates text by repeatedly choosing the highest-probability next token.
 - **Sampling controls**: supports temperature, top-k, and top-p token selection.
 - **EOS stopping**: stops generation early when the model emits the configured end-of-sequence token.
+- **Stop strings**: trims decoded CLI output at user-provided stop sequences.
 - **Prefill/decode split**: processes the prompt once, then decodes one token at a time.
 - **Preallocated KV-cache**: stores key/value tensors in fixed cache memory instead of recomputing the whole prompt every token.
-- **Cache benchmarking**: measures cached vs uncached generation speed, prefill time, decode time, and tokens/sec.
+- **Static batched generation**: accepts multiple prompts in one fixed batch through the CLI.
+- **KV-cache memory accounting**: reports estimated cache memory for benchmark runs.
+- **Cache benchmarking**: measures cached vs uncached generation speed, prefill time, decode time, tokens/sec, and CSV output.
 - **Hugging Face parity tests**: checks core math against Hugging Face Qwen modules so the implementation stays aligned with real Qwen behavior.
 
 ## Run
@@ -32,10 +36,30 @@ uv run python scripts/download_weights.py
 uv run augur generate --prompt "Write one short sentence about GPUs." --max-new-tokens 40
 ```
 
+Batched generation:
+
+```bash
+uv run augur generate \
+  --prompt "Write one sentence about GPUs." \
+  --prompt "Write one sentence about CPUs." \
+  --max-new-tokens 32 \
+  --stop "Human:"
+```
+
 Benchmark:
 
 ```bash
 uv run augur bench --max-new-tokens 32
+```
+
+Batched benchmark with CSV output:
+
+```bash
+uv run augur bench \
+  --prompt "Write one sentence about GPUs." \
+  --prompt "Write one sentence about CPUs." \
+  --max-new-tokens 32 \
+  --csv
 ```
 
 Test:
@@ -49,6 +73,7 @@ uv run ruff check .
 
 - Only Qwen2.5-0.5B is targeted right now.
 - No presence, frequency, or repetition penalties yet.
-- No batching with padding masks yet.
+- No per-sequence stopping for finished batch rows yet.
+- No continuous batching scheduler yet.
 - No Triton/CUDA kernels yet.
 - No paged attention yet.
