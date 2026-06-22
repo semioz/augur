@@ -35,7 +35,7 @@ uv run augur generate --prompt "Write one short sentence about GPUs." --max-new-
 Benchmark:
 
 ```bash
-uv run python scripts/bench_generate.py --max-new-tokens 32
+uv run augur bench --max-new-tokens 32
 ```
 
 Test:

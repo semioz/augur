@@ -102,3 +102,31 @@ def test_benchmark_generate_measures_uncached_recompute(monkeypatch) -> None:
     assert result.total_seconds == pytest.approx(0.3)
     assert result.decode_tokens_per_second == pytest.approx(2 / 0.3)
     assert result.total_tokens_per_second == pytest.approx(2 / 0.3)
+
+
+def test_format_benchmark_csv_outputs_header_and_rows() -> None:
+    cached = benchmarking.GenerationBenchmarkResult(
+        output_ids=torch.tensor([[1, 2, 3, 4, 5]]),
+        use_cache=True,
+        prompt_tokens=2,
+        generated_tokens=3,
+        prefill_seconds=0.25,
+        decode_seconds=0.25,
+        decode_model_tokens=2,
+    )
+    uncached = benchmarking.GenerationBenchmarkResult(
+        output_ids=torch.tensor([[1, 2, 3, 4, 5]]),
+        use_cache=False,
+        prompt_tokens=2,
+        generated_tokens=3,
+        prefill_seconds=0.0,
+        decode_seconds=0.75,
+        decode_model_tokens=3,
+    )
+
+    assert benchmarking.format_benchmark_csv([cached, uncached]) == (
+        "variant,prompt_tokens,generated_tokens,prefill_seconds,decode_seconds,"
+        "total_seconds,decode_model_tokens,decode_tokens_per_second,total_tokens_per_second\n"
+        "cached,2,3,0.250000,0.250000,0.500000,2,8.000000,6.000000\n"
+        "uncached,2,3,0.000000,0.750000,0.750000,3,4.000000,4.000000\n"
+    )

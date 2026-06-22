@@ -1,5 +1,7 @@
+import csv
+import io
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 import torch
@@ -90,6 +92,41 @@ def format_comparison(
 ) -> str:
     speedup = tokens_per_second(uncached.total_seconds, cached.total_seconds)
     return f"cached speedup vs uncached total time: {speedup:.2f}x"
+
+
+def format_benchmark_csv(results: Iterable[GenerationBenchmarkResult]) -> str:
+    output = io.StringIO()
+    writer = csv.DictWriter(
+        output,
+        fieldnames=[
+            "variant",
+            "prompt_tokens",
+            "generated_tokens",
+            "prefill_seconds",
+            "decode_seconds",
+            "total_seconds",
+            "decode_model_tokens",
+            "decode_tokens_per_second",
+            "total_tokens_per_second",
+        ],
+        lineterminator="\n",
+    )
+    writer.writeheader()
+    for result in results:
+        writer.writerow(
+            {
+                "variant": "cached" if result.use_cache else "uncached",
+                "prompt_tokens": result.prompt_tokens,
+                "generated_tokens": result.generated_tokens,
+                "prefill_seconds": f"{result.prefill_seconds:.6f}",
+                "decode_seconds": f"{result.decode_seconds:.6f}",
+                "total_seconds": f"{result.total_seconds:.6f}",
+                "decode_model_tokens": result.decode_model_tokens,
+                "decode_tokens_per_second": f"{result.decode_tokens_per_second:.6f}",
+                "total_tokens_per_second": f"{result.total_tokens_per_second:.6f}",
+            }
+        )
+    return output.getvalue()
 
 
 @torch.inference_mode()

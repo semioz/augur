@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import torch
 
 import augur.cli as cli
+from augur.benchmarking import GenerationBenchmarkResult
 
 
 class TokenizerStub:
@@ -49,6 +50,35 @@ def test_parse_args_accepts_generate_subcommand_controls() -> None:
     assert args.top_p == 0.9
     assert args.device == "cpu"
     assert args.dtype == "float32"
+
+
+def test_parse_args_accepts_bench_subcommand_controls() -> None:
+    args = cli.parse_args(
+        [
+            "bench",
+            "--model-dir",
+            "models/qwen2.5-0.5b",
+            "--prompt",
+            "hello",
+            "--max-new-tokens",
+            "7",
+            "--device",
+            "cpu",
+            "--dtype",
+            "float32",
+            "--skip-uncached",
+            "--csv",
+        ]
+    )
+
+    assert args.command == "bench"
+    assert args.model_dir == Path("models/qwen2.5-0.5b")
+    assert args.prompt == "hello"
+    assert args.max_new_tokens == 7
+    assert args.device == "cpu"
+    assert args.dtype == "float32"
+    assert args.skip_uncached is True
+    assert args.csv is True
 
 
 def test_generate_command_passes_runtime_and_sampling_controls(monkeypatch, capsys) -> None:
@@ -107,6 +137,113 @@ def test_generate_command_passes_runtime_and_sampling_controls(monkeypatch, caps
     assert capsys.readouterr().out == "12\n"
 
 
+def test_bench_command_prints_text_results_and_comparison(monkeypatch, capsys) -> None:
+    seen_calls: list[bool] = []
+
+    def fake_load_weights(path, cfg, device, dtype):
+        return SimpleNamespace(embed_tokens=torch.empty(0, dtype=dtype))
+
+    def fake_benchmark_generate(input_ids, weights, cfg, max_new_tokens, use_cache):
+        assert input_ids.tolist() == [[10, 11]]
+        assert max_new_tokens == 7
+        seen_calls.append(use_cache)
+        return benchmark_result(use_cache=use_cache)
+
+    monkeypatch.setattr(cli.Tokenizer, "from_pretrained", staticmethod(lambda model_dir: TokenizerStub()))
+    monkeypatch.setattr(cli, "load_weights", fake_load_weights)
+    monkeypatch.setattr(cli, "benchmark_generate", fake_benchmark_generate)
+
+    cli.main(
+        [
+            "bench",
+            "--model-dir",
+            "models/qwen2.5-0.5b",
+            "--prompt",
+            "hello",
+            "--max-new-tokens",
+            "7",
+            "--device",
+            "cpu",
+            "--dtype",
+            "float32",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert seen_calls == [True, False]
+    assert "device: cpu" in output
+    assert "dtype: torch.float32" in output
+    assert "cache: on" in output
+    assert "cache: off" in output
+    assert "cached speedup vs uncached total time" in output
+
+
+def test_bench_command_can_print_csv_results(monkeypatch, capsys) -> None:
+    def fake_load_weights(path, cfg, device, dtype):
+        return SimpleNamespace(embed_tokens=torch.empty(0, dtype=dtype))
+
+    def fake_benchmark_generate(input_ids, weights, cfg, max_new_tokens, use_cache):
+        return benchmark_result(use_cache=use_cache)
+
+    monkeypatch.setattr(cli.Tokenizer, "from_pretrained", staticmethod(lambda model_dir: TokenizerStub()))
+    monkeypatch.setattr(cli, "load_weights", fake_load_weights)
+    monkeypatch.setattr(cli, "benchmark_generate", fake_benchmark_generate)
+
+    cli.main(
+        [
+            "bench",
+            "--prompt",
+            "hello",
+            "--max-new-tokens",
+            "7",
+            "--device",
+            "cpu",
+            "--dtype",
+            "float32",
+            "--csv",
+        ]
+    )
+
+    assert capsys.readouterr().out == (
+        "variant,prompt_tokens,generated_tokens,prefill_seconds,decode_seconds,"
+        "total_seconds,decode_model_tokens,decode_tokens_per_second,total_tokens_per_second\n"
+        "cached,2,3,0.250000,0.250000,0.500000,2,8.000000,6.000000\n"
+        "uncached,2,3,0.000000,0.750000,0.750000,3,4.000000,4.000000\n"
+    )
+
+
+def test_bench_command_can_skip_uncached(monkeypatch, capsys) -> None:
+    seen_calls: list[bool] = []
+
+    def fake_load_weights(path, cfg, device, dtype):
+        return SimpleNamespace(embed_tokens=torch.empty(0, dtype=dtype))
+
+    def fake_benchmark_generate(input_ids, weights, cfg, max_new_tokens, use_cache):
+        seen_calls.append(use_cache)
+        return benchmark_result(use_cache=use_cache)
+
+    monkeypatch.setattr(cli.Tokenizer, "from_pretrained", staticmethod(lambda model_dir: TokenizerStub()))
+    monkeypatch.setattr(cli, "load_weights", fake_load_weights)
+    monkeypatch.setattr(cli, "benchmark_generate", fake_benchmark_generate)
+
+    cli.main(
+        [
+            "bench",
+            "--prompt",
+            "hello",
+            "--device",
+            "cpu",
+            "--dtype",
+            "float32",
+            "--skip-uncached",
+            "--csv",
+        ]
+    )
+
+    assert seen_calls == [True]
+    assert "uncached" not in capsys.readouterr().out
+
+
 def test_decode_generated_text_skips_prompt_tokens() -> None:
     input_ids = torch.tensor([[10, 11, 12]])
     output_ids = torch.tensor([[10, 11, 12, 13, 14]])
@@ -116,3 +253,25 @@ def test_decode_generated_text_skips_prompt_tokens() -> None:
 
 def test_resolve_dtype_uses_float32_for_auto_cpu() -> None:
     assert cli.resolve_dtype("auto", torch.device("cpu")) == torch.float32
+
+
+def benchmark_result(use_cache: bool) -> GenerationBenchmarkResult:
+    if use_cache:
+        return GenerationBenchmarkResult(
+            output_ids=torch.tensor([[1, 2, 3, 4, 5]]),
+            use_cache=True,
+            prompt_tokens=2,
+            generated_tokens=3,
+            prefill_seconds=0.25,
+            decode_seconds=0.25,
+            decode_model_tokens=2,
+        )
+    return GenerationBenchmarkResult(
+        output_ids=torch.tensor([[1, 2, 3, 4, 5]]),
+        use_cache=False,
+        prompt_tokens=2,
+        generated_tokens=3,
+        prefill_seconds=0.0,
+        decode_seconds=0.75,
+        decode_model_tokens=3,
+    )
