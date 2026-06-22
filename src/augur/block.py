@@ -15,6 +15,7 @@ def block(
     position_ids: Tensor,
     cache: KVCache | None = None,
     layer_idx: int | None = None,
+    attention_mask: Tensor | None = None,
 ) -> Tensor:
     x = x + attention(
         rms_norm(x, w.input_layernorm, cfg.rms_norm_eps),
@@ -23,6 +24,7 @@ def block(
         position_ids,
         cache=cache,
         layer_idx=layer_idx,
+        attention_mask=attention_mask,
     )
     x = x + mlp(
         rms_norm(x, w.post_attention_layernorm, cfg.rms_norm_eps),

@@ -5,6 +5,7 @@ from transformers.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM
 
 from augur.config import QwenConfig
 from augur.kv_cache import new_kv_cache
+import augur.model as model_module
 from augur.model import model
 from augur.rms_norm import rms_norm
 from augur.weights import Attention, DecoderLayer, Linear, MLP, RMSNorm, Weights
@@ -174,3 +175,22 @@ def test_model_with_cache_matches_full_model_last_token() -> None:
     cached_last = model(input_ids[:, 3:], w, cfg, cache=cache, position_ids=torch.full((2, 1), 3))
 
     torch.testing.assert_close(cached_last, full[:, 3:, :], rtol=1e-5, atol=1e-5)
+
+
+def test_model_forwards_attention_mask(monkeypatch) -> None:
+    cfg = _tiny_config_with_layer()
+    w = _build_weights(cfg)
+    input_ids = torch.tensor([[1, 2, 3], [4, 5, 0]])
+    attention_mask = torch.tensor([[1, 1, 1], [1, 1, 0]])
+    seen_attention_mask = None
+
+    def fake_block(x, w, cfg, position_ids, cache=None, layer_idx=None, attention_mask=None):
+        nonlocal seen_attention_mask
+        seen_attention_mask = attention_mask
+        return x
+
+    monkeypatch.setattr(model_module, "block", fake_block)
+
+    model(input_ids, w, cfg, attention_mask=attention_mask)
+
+    assert seen_attention_mask is attention_mask

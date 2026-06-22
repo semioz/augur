@@ -15,6 +15,7 @@ def model(
     cfg: QwenConfig,
     cache: KVCache | None = None,
     position_ids: Tensor | None = None,
+    attention_mask: Tensor | None = None,
 ) -> Tensor:
     batch, seq = input_ids.shape
     if position_ids is None:
@@ -30,7 +31,15 @@ def model(
     x = F.embedding(input_ids, w.embed_tokens)
 
     for layer_idx, layer in enumerate(w.layers):
-        x = block(x, layer, cfg, position_ids, cache=cache, layer_idx=layer_idx)
+        x = block(
+            x,
+            layer,
+            cfg,
+            position_ids,
+            cache=cache,
+            layer_idx=layer_idx,
+            attention_mask=attention_mask,
+        )
 
     x = rms_norm(x, w.norm, cfg.rms_norm_eps)
     return F.linear(x, w.lm_head)

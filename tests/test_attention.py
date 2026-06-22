@@ -104,6 +104,39 @@ def test_attention_preserves_shape() -> None:
     assert attention(x, w, cfg, position_ids).shape == x.shape
 
 
+def test_attention_mask_ignores_padding_keys() -> None:
+    cfg = QwenConfig(
+        vocab_size=32,
+        hidden_size=4,
+        intermediate_size=8,
+        num_hidden_layers=1,
+        num_attention_heads=1,
+        num_key_value_heads=1,
+        max_position_embeddings=16,
+    )
+    w = Attention(
+        q=Linear(torch.zeros(cfg.hidden_size, cfg.hidden_size)),
+        k=Linear(torch.zeros(cfg.hidden_size, cfg.hidden_size)),
+        v=Linear(torch.eye(cfg.hidden_size)),
+        o=Linear(torch.eye(cfg.hidden_size)),
+    )
+    x = torch.tensor(
+        [
+            [
+                [1000.0, 0.0, 0.0, 0.0],
+                [0.0, 2.0, 0.0, 0.0],
+                [0.0, 0.0, 4.0, 0.0],
+            ]
+        ]
+    )
+    position_ids = torch.arange(3).unsqueeze(0)
+    attention_mask = torch.tensor([[0, 1, 1]])
+
+    out = attention(x, w, cfg, position_ids, attention_mask=attention_mask)
+
+    torch.testing.assert_close(out[:, -1, :], torch.tensor([[0.0, 1.0, 2.0, 0.0]]))
+
+
 def test_attention_with_cache_matches_full_attention_last_token() -> None:
     cfg = _tiny_config()
     torch.manual_seed(0)

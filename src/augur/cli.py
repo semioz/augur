@@ -44,7 +44,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def add_generate_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--model-dir", type=Path, default=MODEL_DIR)
-    parser.add_argument("--prompt", default=DEFAULT_PROMPT)
+    parser.add_argument("--prompt", action="append", default=None)
     parser.add_argument("--max-new-tokens", type=int, default=200)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top-k", type=int, default=None)
@@ -82,7 +82,8 @@ def run_generate(args: argparse.Namespace) -> None:
     tokenizer = Tokenizer.from_pretrained(args.model_dir)
     weights = load_weights(args.model_dir / "model.safetensors", cfg, device=device, dtype=dtype)
 
-    input_ids = torch.tensor([tokenizer.encode(args.prompt)], device=device)
+    prompts = args.prompt or [DEFAULT_PROMPT]
+    input_ids, attention_mask, prompt_lengths = encode_prompts(tokenizer, prompts, device)
     output_ids = generate(
         input_ids,
         weights,
@@ -93,9 +94,15 @@ def run_generate(args: argparse.Namespace) -> None:
         temperature=args.temperature,
         top_k=args.top_k,
         top_p=args.top_p,
+        attention_mask=attention_mask,
     )
 
-    print(decode_generated_text(tokenizer, input_ids, output_ids))
+    generated_texts = decode_generated_texts(tokenizer, prompt_lengths, output_ids)
+    if len(generated_texts) == 1:
+        print(generated_texts[0])
+        return
+    for idx, text in enumerate(generated_texts):
+        print(f"[{idx}] {text}")
 
 
 def run_bench(args: argparse.Namespace) -> None:
@@ -160,6 +167,45 @@ def decode_generated_text(tokenizer: Tokenizer, input_ids: torch.Tensor, output_
     prompt_len = input_ids.shape[1]
     generated_ids = output_ids[0, prompt_len:]
     return tokenizer.decode(generated_ids.tolist()).lstrip()
+
+
+def encode_prompts(
+    tokenizer: Tokenizer,
+    prompts: list[str],
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor, list[int]]:
+    encoded = [tokenizer.encode(prompt) for prompt in prompts]
+    if not encoded:
+        raise ValueError("at least one prompt is required")
+    max_len = max(len(ids) for ids in encoded)
+    pad_token_id = tokenizer.eos_token_id
+
+    input_ids = []
+    attention_mask = []
+    prompt_lengths = []
+    for ids in encoded:
+        prompt_lengths.append(len(ids))
+        pad_len = max_len - len(ids)
+        input_ids.append(ids + [pad_token_id] * pad_len)
+        attention_mask.append([1] * len(ids) + [0] * pad_len)
+
+    return (
+        torch.tensor(input_ids, device=device),
+        torch.tensor(attention_mask, device=device),
+        prompt_lengths,
+    )
+
+
+def decode_generated_texts(
+    tokenizer: Tokenizer,
+    prompt_lengths: list[int],
+    output_ids: torch.Tensor,
+) -> list[str]:
+    prompt_width = max(prompt_lengths)
+    return [
+        tokenizer.decode(output_ids[row_idx, prompt_width:].tolist()).lstrip()
+        for row_idx in range(len(prompt_lengths))
+    ]
 
 
 def resolve_device(device: str) -> torch.device:

@@ -7,6 +7,7 @@ import torch
 from transformers import Qwen2Config as HFQwen2Config
 from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer, Qwen2RotaryEmbedding
 
+import augur.block as block_module
 from augur.block import block
 from augur.config import QwenConfig
 from augur.weights import Attention, DecoderLayer, Linear, MLP, RMSNorm
@@ -130,3 +131,37 @@ def test_block_preserves_shape() -> None:
     position_ids = torch.arange(7).expand(3, -1)
 
     assert block(x, w, cfg, position_ids).shape == x.shape
+
+
+def test_block_forwards_attention_mask(monkeypatch) -> None:
+    cfg = _tiny_config()
+    w = DecoderLayer(
+        input_layernorm=RMSNorm(torch.ones(cfg.hidden_size)),
+        self_attn=Attention(
+            q=Linear(torch.empty(0)),
+            k=Linear(torch.empty(0)),
+            v=Linear(torch.empty(0)),
+            o=Linear(torch.empty(0)),
+        ),
+        post_attention_layernorm=RMSNorm(torch.ones(cfg.hidden_size)),
+        mlp=MLP(
+            gate=Linear(torch.zeros(cfg.intermediate_size, cfg.hidden_size)),
+            up=Linear(torch.zeros(cfg.intermediate_size, cfg.hidden_size)),
+            down=Linear(torch.zeros(cfg.hidden_size, cfg.intermediate_size)),
+        ),
+    )
+    x = torch.randn(2, 3, cfg.hidden_size)
+    position_ids = torch.arange(3).expand(2, -1)
+    attention_mask = torch.tensor([[1, 1, 1], [1, 1, 0]])
+    seen_attention_mask = None
+
+    def fake_attention(x, w, cfg, position_ids, cache=None, layer_idx=None, attention_mask=None):
+        nonlocal seen_attention_mask
+        seen_attention_mask = attention_mask
+        return torch.zeros_like(x)
+
+    monkeypatch.setattr(block_module, "attention", fake_attention)
+
+    block(x, w, cfg, position_ids, attention_mask=attention_mask)
+
+    assert seen_attention_mask is attention_mask

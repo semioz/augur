@@ -142,6 +142,46 @@ def test_generate_uses_sampling_parameters(monkeypatch) -> None:
     assert seen_sampling_args == [(0.8, 20, 0.9)]
 
 
+def test_generate_with_attention_mask_samples_from_last_real_token(monkeypatch) -> None:
+    cfg = QwenConfig(
+        vocab_size=8,
+        hidden_size=4,
+        intermediate_size=8,
+        num_hidden_layers=0,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+    )
+    seen_attention_masks: list[torch.Tensor] = []
+
+    def fake_model(
+        input_ids: torch.Tensor,
+        w: object,
+        cfg: QwenConfig,
+        position_ids: torch.Tensor | None = None,
+        attention_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        assert attention_mask is not None
+        seen_attention_masks.append(attention_mask.clone())
+        logits = torch.zeros(input_ids.shape[0], input_ids.shape[1], cfg.vocab_size)
+        logits[0, 1, 5] = 1.0
+        logits[0, 2, 6] = 2.0
+        logits[1, 2, 7] = 1.0
+        return logits
+
+    monkeypatch.setattr(generation, "model", fake_model)
+
+    output = generation.generate(
+        torch.tensor([[1, 2, 0], [3, 4, 5]]),
+        w=object(),
+        cfg=cfg,
+        max_new_tokens=1,
+        attention_mask=torch.tensor([[1, 1, 0], [1, 1, 1]]),
+    )
+
+    assert output.tolist() == [[1, 2, 0, 5], [3, 4, 5, 7]]
+    assert seen_attention_masks[0].tolist() == [[1, 1, 0], [1, 1, 1]]
+
+
 def test_generate_with_cache_uses_sampling_parameters(monkeypatch) -> None:
     cfg = QwenConfig(
         vocab_size=8,
@@ -189,6 +229,60 @@ def test_generate_with_cache_uses_sampling_parameters(monkeypatch) -> None:
 
     assert output.tolist() == [[1, 2, 4]]
     assert seen_sampling_args == [(0.8, 20, 0.9)]
+
+
+def test_generate_with_cache_updates_batched_attention_mask_and_positions(monkeypatch) -> None:
+    cfg = QwenConfig(
+        vocab_size=8,
+        hidden_size=4,
+        intermediate_size=8,
+        num_hidden_layers=2,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+    )
+    seen_attention_masks: list[list[list[int]]] = []
+    seen_position_ids: list[list[list[int]]] = []
+
+    def fake_model(
+        input_ids: torch.Tensor,
+        w: object,
+        cfg: QwenConfig,
+        cache: object | None = None,
+        position_ids: torch.Tensor | None = None,
+        attention_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        assert cache is not None
+        assert position_ids is not None
+        assert attention_mask is not None
+        seen_position_ids.append(position_ids.tolist())
+        seen_attention_masks.append(attention_mask.tolist())
+        logits = torch.zeros(input_ids.shape[0], input_ids.shape[1], cfg.vocab_size)
+        if len(seen_position_ids) == 1:
+            logits[0, 1, 5] = 1.0
+            logits[0, 2, 6] = 2.0
+            logits[1, 2, 7] = 1.0
+        else:
+            logits[0, -1, 1] = 1.0
+            logits[1, -1, 2] = 1.0
+        return logits
+
+    monkeypatch.setattr(generation, "model", fake_model)
+
+    output = generation.generate(
+        torch.tensor([[1, 2, 0], [3, 4, 5]]),
+        w=SimpleNamespace(embed_tokens=torch.empty(0, dtype=torch.float32)),
+        cfg=cfg,
+        max_new_tokens=2,
+        use_cache=True,
+        attention_mask=torch.tensor([[1, 1, 0], [1, 1, 1]]),
+    )
+
+    assert output.tolist() == [[1, 2, 0, 5, 1], [3, 4, 5, 7, 2]]
+    assert seen_position_ids == [[[0, 1, 2], [0, 1, 2]], [[2], [3]]]
+    assert seen_attention_masks == [
+        [[1, 1, 0], [1, 1, 1]],
+        [[1, 1, 1, 0], [1, 1, 1, 1]],
+    ]
 
 
 def test_generate_can_use_cache(monkeypatch) -> None:

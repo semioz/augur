@@ -11,8 +11,11 @@ class TokenizerStub:
     eos_token_id = 99
 
     def encode(self, text: str) -> list[int]:
-        assert text == "hello"
-        return [10, 11]
+        return {
+            "hello": [10, 11],
+            "short": [12],
+            "longer": [13, 14, 15],
+        }[text]
 
     def decode(self, ids: list[int]) -> str:
         return " " + " ".join(str(token_id) for token_id in ids)
@@ -43,7 +46,7 @@ def test_parse_args_accepts_generate_subcommand_controls() -> None:
 
     assert args.command == "generate"
     assert args.model_dir == Path("models/qwen2.5-0.5b")
-    assert args.prompt == "hello"
+    assert args.prompt == ["hello"]
     assert args.max_new_tokens == 7
     assert args.temperature == 0.8
     assert args.top_k == 20
@@ -92,6 +95,7 @@ def test_generate_command_passes_runtime_and_sampling_controls(monkeypatch, caps
     def fake_generate(input_ids, weights, cfg, **kwargs):
         assert input_ids.device.type == "cpu"
         assert input_ids.tolist() == [[10, 11]]
+        assert kwargs["attention_mask"].tolist() == [[1, 1]]
         seen_generate_args.update(kwargs)
         return torch.tensor([[10, 11, 12]])
 
@@ -126,6 +130,8 @@ def test_generate_command_passes_runtime_and_sampling_controls(monkeypatch, caps
         "device": torch.device("cpu"),
         "dtype": torch.float32,
     }
+    attention_mask = seen_generate_args.pop("attention_mask")
+    assert attention_mask.tolist() == [[1, 1]]
     assert seen_generate_args == {
         "max_new_tokens": 7,
         "use_cache": True,
@@ -135,6 +141,42 @@ def test_generate_command_passes_runtime_and_sampling_controls(monkeypatch, caps
         "top_p": 0.9,
     }
     assert capsys.readouterr().out == "12\n"
+
+
+def test_generate_command_batches_repeated_prompts_with_padding(monkeypatch, capsys) -> None:
+    seen_generate_args = {}
+
+    def fake_load_weights(path, cfg, device, dtype):
+        return SimpleNamespace(embed_tokens=torch.empty(0, dtype=dtype))
+
+    def fake_generate(input_ids, weights, cfg, **kwargs):
+        assert input_ids.tolist() == [[12, 99, 99], [13, 14, 15]]
+        assert kwargs["attention_mask"].tolist() == [[1, 0, 0], [1, 1, 1]]
+        seen_generate_args.update(kwargs)
+        return torch.tensor([[12, 99, 99, 20], [13, 14, 15, 21]])
+
+    monkeypatch.setattr(cli.Tokenizer, "from_pretrained", staticmethod(lambda model_dir: TokenizerStub()))
+    monkeypatch.setattr(cli, "load_weights", fake_load_weights)
+    monkeypatch.setattr(cli, "generate", fake_generate)
+
+    cli.main(
+        [
+            "generate",
+            "--prompt",
+            "short",
+            "--prompt",
+            "longer",
+            "--max-new-tokens",
+            "1",
+            "--device",
+            "cpu",
+            "--dtype",
+            "float32",
+        ]
+    )
+
+    assert seen_generate_args["max_new_tokens"] == 1
+    assert capsys.readouterr().out == "[0] 20\n[1] 21\n"
 
 
 def test_bench_command_prints_text_results_and_comparison(monkeypatch, capsys) -> None:
@@ -250,6 +292,12 @@ def test_decode_generated_text_skips_prompt_tokens() -> None:
     output_ids = torch.tensor([[10, 11, 12, 13, 14]])
 
     assert cli.decode_generated_text(TokenizerStub(), input_ids, output_ids) == "13 14"
+
+
+def test_decode_generated_texts_skip_each_prompt_length() -> None:
+    output_ids = torch.tensor([[12, 99, 99, 20], [13, 14, 15, 21]])
+
+    assert cli.decode_generated_texts(TokenizerStub(), [1, 3], output_ids) == ["20", "21"]
 
 
 def test_resolve_dtype_uses_float32_for_auto_cpu() -> None:
