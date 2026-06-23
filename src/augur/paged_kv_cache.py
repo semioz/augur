@@ -34,6 +34,13 @@ class PagedKVCache:
 class SequenceBlockTable:
     block_ids: list[int]
     block_size: int
+    seq_len: int = 0
+
+    @classmethod
+    def empty(cls, block_size: int) -> "SequenceBlockTable":
+        if block_size <= 0:
+            raise ValueError("block_size must be positive")
+        return cls(block_ids=[], block_size=block_size)
 
     @classmethod
     def allocate(
@@ -51,7 +58,16 @@ class SequenceBlockTable:
         return cls(
             block_ids=[allocator.allocate() for _ in range(num_required_blocks)],
             block_size=block_size,
+            seq_len=max_seq_len,
         )
+
+    def ensure_position(self, position: int, allocator: BlockAllocator) -> None:
+        if position < 0:
+            raise ValueError("position must be non-negative")
+        required_blocks = position // self.block_size + 1
+        while len(self.block_ids) < required_blocks:
+            self.block_ids.append(allocator.allocate())
+        self.seq_len = max(self.seq_len, position + 1)
 
     def position_to_block_offset(self, position: int) -> tuple[int, int]:
         if position < 0:
@@ -109,6 +125,7 @@ def write_paged_kv(
         raise ValueError("key/value shape does not match cache shape")
 
     for token_idx, position in enumerate(position_ids[0].tolist()):
+        block_table.ensure_position(position, cache.allocator)
         physical_block, offset = block_table.position_to_block_offset(position)
         cache.keys[layer_idx, physical_block, :, offset, :] = key[0, :, token_idx, :]
         cache.values[layer_idx, physical_block, :, offset, :] = value[0, :, token_idx, :]
@@ -118,8 +135,10 @@ def read_paged_kv(
     cache: PagedKVCache,
     layer_idx: int,
     block_table: SequenceBlockTable,
-    seq_len: int,
+    seq_len: int | None = None,
 ) -> tuple[Tensor, Tensor]:
+    if seq_len is None:
+        seq_len = block_table.seq_len
     if seq_len <= 0:
         raise ValueError("seq_len must be positive")
     if not 0 <= layer_idx < cache.keys.shape[0]:
