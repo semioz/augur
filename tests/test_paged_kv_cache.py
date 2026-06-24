@@ -77,6 +77,21 @@ def test_sequence_block_table_tracks_logical_sequence_length() -> None:
     assert table.seq_len == 5
 
 
+def test_sequence_block_table_frees_owned_blocks_for_reuse() -> None:
+    allocator = BlockAllocator(num_blocks=4)
+    table = SequenceBlockTable.empty(block_size=4)
+    table.ensure_position(8, allocator)
+
+    assert table.block_ids == [0, 1, 2]
+    assert table.seq_len == 9
+
+    table.free(allocator)
+
+    assert table.block_ids == []
+    assert table.seq_len == 0
+    assert [allocator.allocate(), allocator.allocate(), allocator.allocate()] == [0, 1, 2]
+
+
 def test_sequence_block_table_maps_position_to_physical_block_and_offset() -> None:
     table = SequenceBlockTable(block_ids=[7, 1, 4], block_size=4)
 

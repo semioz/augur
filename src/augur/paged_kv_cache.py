@@ -69,6 +69,12 @@ class SequenceBlockTable:
             self.block_ids.append(allocator.allocate())
         self.seq_len = max(self.seq_len, position + 1)
 
+    def free(self, allocator: BlockAllocator) -> None:
+        for block_id in reversed(self.block_ids):
+            allocator.free(block_id)
+        self.block_ids.clear()
+        self.seq_len = 0
+
     def position_to_block_offset(self, position: int) -> tuple[int, int]:
         if position < 0:
             raise ValueError("position must be non-negative")

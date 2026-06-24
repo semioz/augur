@@ -1,8 +1,8 @@
 # augur
 
-A small Qwen inference engine written from scratch in PyTorch as a correctness reference before Triton/CUDA work.
+A small Qwen inference engine in PyTorch, built as a correctness reference before Triton/CUDA work.
 
-The goal is to mirror the real Qwen inference path closely enough that the model can load actual Qwen weights, tokenize a prompt, run transformer forward passes, and generate text.
+It loads real Qwen weights, tokenizes prompts, runs transformer forwards, and generates text.
 
 ## Features
 
