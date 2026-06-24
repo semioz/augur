@@ -1,5 +1,6 @@
 import torch
 import torch.nn.functional as F
+from types import SimpleNamespace
 from transformers import Qwen2Config as HFQwen2Config
 from transformers.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM
 
@@ -194,3 +195,31 @@ def test_model_forwards_attention_mask(monkeypatch) -> None:
     model(input_ids, w, cfg, attention_mask=attention_mask)
 
     assert seen_attention_mask is attention_mask
+
+
+def test_model_forwards_paged_cache(monkeypatch) -> None:
+    cfg = _tiny_config_with_layer()
+    w = _build_weights(cfg)
+    input_ids = torch.tensor([[1, 2, 3]])
+    paged_cache = SimpleNamespace(block_table=SimpleNamespace(seq_len=0))
+    seen_paged_cache = None
+
+    def fake_block(
+        x,
+        w,
+        cfg,
+        position_ids,
+        cache=None,
+        paged_cache=None,
+        layer_idx=None,
+        attention_mask=None,
+    ):
+        nonlocal seen_paged_cache
+        seen_paged_cache = paged_cache
+        return x
+
+    monkeypatch.setattr(model_module, "block", fake_block)
+
+    model(input_ids, w, cfg, paged_cache=paged_cache)
+
+    assert seen_paged_cache is paged_cache

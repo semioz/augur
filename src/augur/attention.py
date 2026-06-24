@@ -6,6 +6,7 @@ from torch import Tensor
 
 from augur.config import QwenConfig
 from augur.kv_cache import KVCache, write_kv
+from augur.paged_kv_cache import PagedKVCacheState, read_paged_kv, write_paged_kv
 from augur.rope import apply_rope
 from augur.weights import Attention
 
@@ -23,6 +24,7 @@ def attention(
     cfg: QwenConfig,
     position_ids: Tensor,
     cache: KVCache | None = None,
+    paged_cache: PagedKVCacheState | None = None,
     layer_idx: int | None = None,
     attention_mask: Tensor | None = None,
 ) -> Tensor:
@@ -46,10 +48,24 @@ def attention(
 
     q, k = apply_rope(q, k, position_ids, cfg.rope_theta)
 
+    if cache is not None and paged_cache is not None:
+        raise ValueError("cache and paged_cache cannot both be provided")
     if cache is not None:
         if layer_idx is None:
             raise ValueError("layer_idx is required when cache is provided")
         k, v = write_kv(cache, layer_idx, position_ids, k, v)
+    if paged_cache is not None:
+        if layer_idx is None:
+            raise ValueError("layer_idx is required when paged_cache is provided")
+        write_paged_kv(
+            paged_cache.cache,
+            layer_idx,
+            paged_cache.block_table,
+            position_ids,
+            k,
+            v,
+        )
+        k, v = read_paged_kv(paged_cache.cache, layer_idx, paged_cache.block_table)
 
     # qwen uses GQA so we repeat each shared K/V head to match the number of query heads
     k = k.repeat_interleave(cfg.num_key_value_groups, dim=1)

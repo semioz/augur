@@ -31,6 +31,12 @@ class PagedKVCache:
 
 
 @dataclass
+class PagedKVCacheState:
+    cache: PagedKVCache
+    block_table: "SequenceBlockTable"
+
+
+@dataclass
 class SequenceBlockTable:
     block_ids: list[int]
     block_size: int

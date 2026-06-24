@@ -10,6 +10,7 @@ from transformers.models.qwen2.modeling_qwen2 import Qwen2Attention, Qwen2Rotary
 from augur.attention import attention
 from augur.config import QwenConfig
 from augur.kv_cache import new_kv_cache
+from augur.paged_kv_cache import PagedKVCacheState, SequenceBlockTable, new_paged_kv_cache
 from augur.weights import Attention, Linear
 
 
@@ -162,3 +163,41 @@ def test_attention_with_cache_matches_full_attention_last_token() -> None:
     cached_last = attention(x[:, 4:, :], w, cfg, position_ids[:, 4:], cache=cache, layer_idx=0)
 
     torch.testing.assert_close(cached_last, full[:, 4:, :], rtol=1e-5, atol=1e-5)
+
+
+def test_attention_with_paged_cache_matches_contiguous_cache_last_token() -> None:
+    cfg = _tiny_config()
+    torch.manual_seed(0)
+    w = Attention(
+        q=Linear(torch.randn(cfg.hidden_size, cfg.hidden_size)),
+        k=Linear(torch.randn(cfg.num_key_value_heads * cfg.head_dim, cfg.hidden_size)),
+        v=Linear(torch.randn(cfg.num_key_value_heads * cfg.head_dim, cfg.hidden_size)),
+        o=Linear(torch.randn(cfg.hidden_size, cfg.hidden_size)),
+    )
+    x = torch.randn(1, 5, cfg.hidden_size)
+    position_ids = torch.arange(5).unsqueeze(0)
+
+    contiguous = new_kv_cache(
+        cfg,
+        batch_size=1,
+        max_seq_len=5,
+        device=x.device,
+        dtype=x.dtype,
+    )
+    attention(x[:, :4, :], w, cfg, position_ids[:, :4], cache=contiguous, layer_idx=0)
+    contiguous_last = attention(x[:, 4:, :], w, cfg, position_ids[:, 4:], cache=contiguous, layer_idx=0)
+
+    paged = PagedKVCacheState(
+        cache=new_paged_kv_cache(
+            cfg,
+            num_blocks=2,
+            block_size=4,
+            device=x.device,
+            dtype=x.dtype,
+        ),
+        block_table=SequenceBlockTable.empty(block_size=4),
+    )
+    attention(x[:, :4, :], w, cfg, position_ids[:, :4], paged_cache=paged, layer_idx=0)
+    paged_last = attention(x[:, 4:, :], w, cfg, position_ids[:, 4:], paged_cache=paged, layer_idx=0)
+
+    torch.testing.assert_close(paged_last, contiguous_last, rtol=1e-5, atol=1e-5)

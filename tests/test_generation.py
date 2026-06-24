@@ -368,6 +368,56 @@ def test_generate_can_use_cache(monkeypatch) -> None:
     assert seen_cache_shapes == [(2, 1, 1, 5, 2)] * 3
 
 
+def test_generate_can_use_paged_cache_backend(monkeypatch) -> None:
+    cfg = QwenConfig(
+        vocab_size=8,
+        hidden_size=4,
+        intermediate_size=8,
+        num_hidden_layers=2,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+    )
+    seen_shapes: list[tuple[int, int]] = []
+    seen_positions: list[list[list[int]]] = []
+    seen_paged_cache_shapes: list[tuple[int, ...]] = []
+    greedy_tokens = [5, 6, 7]
+
+    def fake_model(
+        input_ids: torch.Tensor,
+        w: object,
+        cfg: QwenConfig,
+        cache: object | None = None,
+        paged_cache: object | None = None,
+        position_ids: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        assert cache is None
+        assert paged_cache is not None
+        assert position_ids is not None
+        seen_shapes.append(tuple(input_ids.shape))
+        seen_positions.append(position_ids.tolist())
+        seen_paged_cache_shapes.append(tuple(paged_cache.cache.keys.shape))
+        logits = torch.zeros(input_ids.shape[0], input_ids.shape[1], cfg.vocab_size)
+        logits[:, -1, greedy_tokens[len(seen_shapes) - 1]] = 1.0
+        return logits
+
+    monkeypatch.setattr(generation, "model", fake_model)
+
+    output = generation.generate(
+        torch.tensor([[1, 2]]),
+        w=SimpleNamespace(embed_tokens=torch.empty(0, dtype=torch.float32)),
+        cfg=cfg,
+        max_new_tokens=3,
+        use_cache=True,
+        cache_backend="paged",
+        paged_block_size=4,
+    )
+
+    assert output.tolist() == [[1, 2, 5, 6, 7]]
+    assert seen_shapes == [(1, 2), (1, 1), (1, 1)]
+    assert seen_positions == [[[0, 1]], [[2]], [[3]]]
+    assert seen_paged_cache_shapes == [(2, 2, 1, 4, 2)] * 3
+
+
 def test_generate_with_cache_stops_when_eos_token_is_selected(monkeypatch) -> None:
     cfg = QwenConfig(
         vocab_size=8,

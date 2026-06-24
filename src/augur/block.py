@@ -5,6 +5,7 @@ from torch import Tensor
 from augur.attention import attention
 from augur.config import QwenConfig
 from augur.kv_cache import KVCache
+from augur.paged_kv_cache import PagedKVCacheState
 from augur.weights import DecoderLayer
 
 
@@ -14,6 +15,7 @@ def block(
     cfg: QwenConfig,
     position_ids: Tensor,
     cache: KVCache | None = None,
+    paged_cache: PagedKVCacheState | None = None,
     layer_idx: int | None = None,
     attention_mask: Tensor | None = None,
 ) -> Tensor:
@@ -23,6 +25,7 @@ def block(
         cfg,
         position_ids,
         cache=cache,
+        paged_cache=paged_cache,
         layer_idx=layer_idx,
         attention_mask=attention_mask,
     )

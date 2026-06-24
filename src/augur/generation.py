@@ -4,6 +4,7 @@ from torch import Tensor
 from augur.config import QwenConfig
 from augur.kv_cache import new_kv_cache
 from augur.model import model
+from augur.paged_kv_cache import PagedKVCacheState, SequenceBlockTable, new_paged_kv_cache
 from augur.prefix_cache import PrefixCache, copy_prefix_into_cache
 from augur.sampling import sample_next_token
 from augur.weights import Weights
@@ -21,9 +22,23 @@ def generate(
     top_p: float | None = None,
     attention_mask: Tensor | None = None,
     prefix_cache: PrefixCache | None = None,
+    cache_backend: str = "contiguous",
+    paged_block_size: int = 16,
 ) -> Tensor:
     if max_new_tokens < 0:
         raise ValueError("max_new_tokens must be non-negative")
+    if cache_backend not in ("contiguous", "paged"):
+        raise ValueError("cache_backend must be 'contiguous' or 'paged'")
+    if cache_backend == "paged" and not use_cache:
+        raise ValueError("paged cache backend requires use_cache=True")
+    if cache_backend == "paged" and input_ids.shape[0] != 1:
+        raise ValueError("paged cache backend currently supports batch size 1")
+    if cache_backend == "paged" and attention_mask is not None:
+        raise ValueError("paged cache backend does not support attention_mask yet")
+    if cache_backend == "paged" and prefix_cache is not None:
+        raise ValueError("paged cache backend does not support prefix_cache yet")
+    if paged_block_size <= 0:
+        raise ValueError("paged_block_size must be positive")
     if attention_mask is not None:
         _validate_attention_mask(input_ids, attention_mask)
     if prefix_cache is not None and not use_cache:
@@ -59,16 +74,21 @@ def generate(
     if max_new_tokens == 0:
         return input_ids
 
-    prefix_entry = prefix_cache.longest_prefix(input_ids) if prefix_cache is not None else None
-
-    cache = new_kv_cache(
-        cfg,
-        batch_size=input_ids.shape[0],
-        max_seq_len=input_ids.shape[1] + max_new_tokens,
-        device=input_ids.device,
-        dtype=w.embed_tokens.dtype,
-    )
-    if prefix_entry is None:
+    cache = None
+    paged_cache = None
+    max_seq_len = input_ids.shape[1] + max_new_tokens
+    if cache_backend == "paged":
+        num_blocks = (max_seq_len + paged_block_size - 1) // paged_block_size
+        paged_cache = PagedKVCacheState(
+            cache=new_paged_kv_cache(
+                cfg,
+                num_blocks=num_blocks,
+                block_size=paged_block_size,
+                device=input_ids.device,
+                dtype=w.embed_tokens.dtype,
+            ),
+            block_table=SequenceBlockTable.empty(block_size=paged_block_size),
+        )
         position_ids = torch.arange(input_ids.shape[1], device=input_ids.device).expand(
             input_ids.shape[0],
             -1,
@@ -77,29 +97,50 @@ def generate(
             input_ids,
             w,
             cfg,
-            cache=cache,
+            paged_cache=paged_cache,
             position_ids=position_ids,
-            attention_mask=attention_mask,
         )
     else:
-        copy_prefix_into_cache(prefix_entry, cache)
-        suffix_ids = input_ids[:, prefix_entry.seq_len :]
-        if suffix_ids.shape[1] == 0:
-            logits = prefix_entry.logits.to(device=input_ids.device)
-        else:
-            position_ids = torch.arange(
-                prefix_entry.seq_len,
-                input_ids.shape[1],
-                device=input_ids.device,
-            ).expand(input_ids.shape[0], -1)
+        prefix_entry = prefix_cache.longest_prefix(input_ids) if prefix_cache is not None else None
+        cache = new_kv_cache(
+            cfg,
+            batch_size=input_ids.shape[0],
+            max_seq_len=max_seq_len,
+            device=input_ids.device,
+            dtype=w.embed_tokens.dtype,
+        )
+        if prefix_entry is None:
+            position_ids = torch.arange(input_ids.shape[1], device=input_ids.device).expand(
+                input_ids.shape[0],
+                -1,
+            )
             logits = _model(
-                suffix_ids,
+                input_ids,
                 w,
                 cfg,
                 cache=cache,
                 position_ids=position_ids,
                 attention_mask=attention_mask,
             )
+        else:
+            copy_prefix_into_cache(prefix_entry, cache)
+            suffix_ids = input_ids[:, prefix_entry.seq_len :]
+            if suffix_ids.shape[1] == 0:
+                logits = prefix_entry.logits.to(device=input_ids.device)
+            else:
+                position_ids = torch.arange(
+                    prefix_entry.seq_len,
+                    input_ids.shape[1],
+                    device=input_ids.device,
+                ).expand(input_ids.shape[0], -1)
+                logits = _model(
+                    suffix_ids,
+                    w,
+                    cfg,
+                    cache=cache,
+                    position_ids=position_ids,
+                    attention_mask=attention_mask,
+                )
 
     for step in range(max_new_tokens):
         next_token = sample_next_token(
@@ -127,6 +168,7 @@ def generate(
             w,
             cfg,
             cache=cache,
+            paged_cache=paged_cache,
             position_ids=position_ids,
             attention_mask=attention_mask,
         )
@@ -138,12 +180,15 @@ def _model(
     w: Weights,
     cfg: QwenConfig,
     cache: object | None = None,
+    paged_cache: object | None = None,
     position_ids: Tensor | None = None,
     attention_mask: Tensor | None = None,
 ) -> Tensor:
     kwargs = {}
     if cache is not None:
         kwargs["cache"] = cache
+    if paged_cache is not None:
+        kwargs["paged_cache"] = paged_cache
     if position_ids is not None:
         kwargs["position_ids"] = position_ids
     if attention_mask is not None:

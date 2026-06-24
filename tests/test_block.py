@@ -155,7 +155,7 @@ def test_block_forwards_attention_mask(monkeypatch) -> None:
     attention_mask = torch.tensor([[1, 1, 1], [1, 1, 0]])
     seen_attention_mask = None
 
-    def fake_attention(x, w, cfg, position_ids, cache=None, layer_idx=None, attention_mask=None):
+    def fake_attention(x, w, cfg, position_ids, cache=None, paged_cache=None, layer_idx=None, attention_mask=None):
         nonlocal seen_attention_mask
         seen_attention_mask = attention_mask
         return torch.zeros_like(x)
@@ -165,3 +165,46 @@ def test_block_forwards_attention_mask(monkeypatch) -> None:
     block(x, w, cfg, position_ids, attention_mask=attention_mask)
 
     assert seen_attention_mask is attention_mask
+
+
+def test_block_forwards_paged_cache(monkeypatch) -> None:
+    cfg = _tiny_config()
+    w = DecoderLayer(
+        input_layernorm=RMSNorm(torch.ones(cfg.hidden_size)),
+        self_attn=Attention(
+            q=Linear(torch.empty(0)),
+            k=Linear(torch.empty(0)),
+            v=Linear(torch.empty(0)),
+            o=Linear(torch.empty(0)),
+        ),
+        post_attention_layernorm=RMSNorm(torch.ones(cfg.hidden_size)),
+        mlp=MLP(
+            gate=Linear(torch.zeros(cfg.intermediate_size, cfg.hidden_size)),
+            up=Linear(torch.zeros(cfg.intermediate_size, cfg.hidden_size)),
+            down=Linear(torch.zeros(cfg.hidden_size, cfg.intermediate_size)),
+        ),
+    )
+    x = torch.randn(1, 3, cfg.hidden_size)
+    position_ids = torch.arange(3).unsqueeze(0)
+    paged_cache = object()
+    seen_paged_cache = None
+
+    def fake_attention(
+        x,
+        w,
+        cfg,
+        position_ids,
+        cache=None,
+        paged_cache=None,
+        layer_idx=None,
+        attention_mask=None,
+    ):
+        nonlocal seen_paged_cache
+        seen_paged_cache = paged_cache
+        return torch.zeros_like(x)
+
+    monkeypatch.setattr(block_module, "attention", fake_attention)
+
+    block(x, w, cfg, position_ids, paged_cache=paged_cache)
+
+    assert seen_paged_cache is paged_cache
