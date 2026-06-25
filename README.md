@@ -27,6 +27,7 @@ It loads real Qwen weights, tokenizes prompts, runs transformer forwards, and ge
 - **Static batched generation**: accepts multiple prompts in one fixed batch through the CLI.
 - **KV-cache memory accounting**: reports estimated cache memory for benchmark runs.
 - **Cache benchmarking**: measures cached vs uncached generation speed, prefill time, decode time, tokens/sec, and CSV output.
+- **Local HTTP server**: serves a simple `/generate` JSON endpoint backed by the same generation path as the CLI.
 - **Hugging Face parity tests**: checks core math against Hugging Face Qwen modules so the implementation stays aligned with real Qwen behavior.
 
 ## Run
@@ -61,6 +62,35 @@ uv run augur bench \
   --prompt "Write one sentence about CPUs." \
   --max-new-tokens 32 \
   --csv
+```
+
+HTTP server:
+
+```bash
+uv run augur serve \
+  --model-dir models/qwen2.5-0.5b \
+  --host 127.0.0.1 \
+  --port 8000 \
+  --device cpu \
+  --dtype float32
+```
+
+Generate through HTTP:
+
+```bash
+curl -X POST http://127.0.0.1:8000/generate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "Write one short sentence about GPUs.",
+    "max_new_tokens": 32,
+    "temperature": 0.0
+  }'
+```
+
+Health check:
+
+```bash
+curl http://127.0.0.1:8000/health
 ```
 
 Test:

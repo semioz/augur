@@ -2,6 +2,7 @@ import argparse
 from pathlib import Path
 
 import torch
+import uvicorn
 
 from augur.benchmarking import (
     benchmark_generate,
@@ -12,6 +13,8 @@ from augur.benchmarking import (
 from augur.config import QwenConfig
 from augur.generation import generate
 from augur.kv_cache import format_bytes, kv_cache_nbytes
+from augur.server import AugurEngine, create_app
+from augur.text import apply_stop_strings
 from augur.tokenizer import Tokenizer
 from augur.weights import load_weights
 
@@ -39,6 +42,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     add_bench_args(bench_parser)
     bench_parser.set_defaults(func=run_bench)
 
+    serve_parser = subparsers.add_parser("serve", help="Start the HTTP generation server.")
+    add_serve_args(serve_parser)
+    serve_parser.set_defaults(func=run_serve)
+
     return parser.parse_args(argv)
 
 
@@ -64,6 +71,13 @@ def add_bench_args(parser: argparse.ArgumentParser) -> None:
         help="Only run the cached benchmark.",
     )
     parser.add_argument("--csv", action="store_true", help="Print benchmark results as CSV.")
+
+
+def add_serve_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--model-dir", type=Path, default=MODEL_DIR)
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8000)
+    add_runtime_args(parser)
 
 
 def add_runtime_args(parser: argparse.ArgumentParser) -> None:
@@ -171,6 +185,19 @@ def run_bench(args: argparse.Namespace) -> None:
     print(format_comparison(uncached, cached))
 
 
+def run_serve(args: argparse.Namespace) -> None:
+    cfg = QwenConfig()
+    device = resolve_device(args.device)
+    dtype = resolve_dtype(args.dtype, device)
+    engine = AugurEngine(
+        model_dir=args.model_dir,
+        cfg=cfg,
+        device=device,
+        dtype=dtype,
+    )
+    uvicorn.run(create_app(engine), host=args.host, port=args.port)
+
+
 def decode_generated_text(tokenizer: Tokenizer, input_ids: torch.Tensor, output_ids: torch.Tensor) -> str:
     prompt_len = input_ids.shape[1]
     generated_ids = output_ids[0, prompt_len:]
@@ -214,13 +241,6 @@ def decode_generated_texts(
         tokenizer.decode(output_ids[row_idx, prompt_width:].tolist()).lstrip()
         for row_idx in range(len(prompt_lengths))
     ]
-
-
-def apply_stop_strings(text: str, stop: list[str]) -> str:
-    stop_positions = [idx for stop_text in stop if (idx := text.find(stop_text)) != -1]
-    if not stop_positions:
-        return text
-    return text[: min(stop_positions)]
 
 
 def resolve_device(device: str) -> torch.device:
