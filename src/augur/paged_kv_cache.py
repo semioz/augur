@@ -37,6 +37,55 @@ class PagedKVCacheState:
 
 
 @dataclass
+class PagedPrefixCacheMatch:
+    block_ids: list[int]
+    matched_tokens: int
+
+
+class PagedPrefixCache:
+    def __init__(self) -> None:
+        self._blocks: dict[tuple[int | None, tuple[int, ...]], tuple[int, int]] = {}
+
+    def add_block(
+        self,
+        parent_hash: int | None,
+        block_tokens: list[int],
+        block_id: int,
+    ) -> int:
+        if not block_tokens:
+            raise ValueError("block_tokens must not be empty")
+
+        block_key = tuple(block_tokens)
+        block_hash = self._hash_block(parent_hash, block_key)
+        self._blocks[(parent_hash, block_key)] = (block_hash, block_id)
+        return block_hash
+
+    def match_prefix(self, token_ids: list[int], block_size: int) -> PagedPrefixCacheMatch:
+        if block_size <= 0:
+            raise ValueError("block_size must be positive")
+
+        parent_hash: int | None = None
+        block_ids: list[int] = []
+        full_blocks = len(token_ids) // block_size
+        for block_idx in range(full_blocks):
+            start = block_idx * block_size
+            block_tokens = tuple(token_ids[start : start + block_size])
+            entry = self._blocks.get((parent_hash, block_tokens))
+            if entry is None:
+                break
+            parent_hash, block_id = entry
+            block_ids.append(block_id)
+
+        return PagedPrefixCacheMatch(
+            block_ids=block_ids,
+            matched_tokens=len(block_ids) * block_size,
+        )
+
+    def _hash_block(self, parent_hash: int | None, block_tokens: tuple[int, ...]) -> int:
+        return hash((parent_hash, block_tokens))
+
+
+@dataclass
 class SequenceBlockTable:
     block_ids: list[int]
     block_size: int

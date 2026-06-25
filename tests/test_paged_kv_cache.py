@@ -1,9 +1,11 @@
 import torch
+import pytest
 
 from augur.config import QwenConfig
 from augur.kv_cache import new_kv_cache, write_kv
 from augur.paged_kv_cache import (
     BlockAllocator,
+    PagedPrefixCache,
     SequenceBlockTable,
     new_paged_kv_cache,
     read_paged_kv,
@@ -25,6 +27,45 @@ def test_block_allocator_allocates_and_reuses_freed_blocks() -> None:
     reused = allocator.allocate()
 
     assert reused == 0
+
+
+def test_paged_prefix_cache_matches_a_full_cached_block() -> None:
+    cache = PagedPrefixCache()
+    cache.add_block(parent_hash=None, block_tokens=[1, 2, 3, 4], block_id=7)
+
+    match = cache.match_prefix([1, 2, 3, 4, 5, 6], block_size=4)
+
+    assert match.block_ids == [7]
+    assert match.matched_tokens == 4
+
+
+def test_paged_prefix_cache_matches_chained_full_blocks() -> None:
+    cache = PagedPrefixCache()
+    first_hash = cache.add_block(parent_hash=None, block_tokens=[1, 2, 3, 4], block_id=7)
+    cache.add_block(parent_hash=first_hash, block_tokens=[5, 6, 7, 8], block_id=9)
+
+    match = cache.match_prefix([1, 2, 3, 4, 5, 6, 7, 8, 99], block_size=4)
+
+    assert match.block_ids == [7, 9]
+    assert match.matched_tokens == 8
+
+
+def test_paged_prefix_cache_ignores_partial_trailing_block() -> None:
+    cache = PagedPrefixCache()
+    first_hash = cache.add_block(parent_hash=None, block_tokens=[1, 2, 3, 4], block_id=7)
+    cache.add_block(parent_hash=first_hash, block_tokens=[5, 6, 7, 8], block_id=9)
+
+    match = cache.match_prefix([1, 2, 3, 4, 5, 6], block_size=4)
+
+    assert match.block_ids == [7]
+    assert match.matched_tokens == 4
+
+
+def test_paged_prefix_cache_rejects_empty_cached_blocks() -> None:
+    cache = PagedPrefixCache()
+
+    with pytest.raises(ValueError, match="block_tokens must not be empty"):
+        cache.add_block(parent_hash=None, block_tokens=[], block_id=7)
 
 
 def test_sequence_block_table_allocates_blocks_for_max_sequence_length() -> None:
