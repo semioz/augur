@@ -87,6 +87,28 @@ curl -X POST http://127.0.0.1:8000/generate \
   }'
 ```
 
+Stream generated text with Server-Sent Events:
+
+```bash
+curl -N -X POST http://127.0.0.1:8000/generate_stream \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "Write one short sentence about GPUs.",
+    "max_new_tokens": 32,
+    "temperature": 0.0
+  }'
+```
+
+The streaming endpoint emits chunks like:
+
+```text
+data: {"text": "GPUs"}
+
+data: {"text": " are"}
+
+data: [DONE]
+```
+
 Health check:
 
 ```bash

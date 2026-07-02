@@ -1,4 +1,5 @@
 import torch
+from collections.abc import Iterator
 from torch import Tensor
 
 from augur.config import QwenConfig
@@ -173,6 +174,61 @@ def generate(
             attention_mask=attention_mask,
         )
     return input_ids
+
+
+def generate_stream(
+    input_ids: Tensor,
+    w: Weights,
+    cfg: QwenConfig,
+    max_new_tokens: int,
+    use_cache: bool = False,
+    eos_token_id: int | None = None,
+    temperature: float = 0.0,
+    top_k: int | None = None,
+    top_p: float | None = None,
+) -> Iterator[Tensor]:
+    if input_ids.shape[0] != 1:
+        raise ValueError("streaming generation currently supports batch size 1")
+    if max_new_tokens < 0:
+        raise ValueError("max_new_tokens must be non-negative")
+    if max_new_tokens == 0:
+        return
+
+    if not use_cache:
+        for _ in range(max_new_tokens):
+            logits = _model(input_ids, w, cfg)
+            next_token = sample_next_token(logits[:, -1, :], temperature, top_k, top_p)
+            input_ids = torch.cat((input_ids, next_token), dim=1)
+            yield next_token
+            if eos_token_id is not None and bool(torch.eq(next_token, eos_token_id).all().item()):
+                break
+        return
+
+    cache = new_kv_cache(
+        cfg,
+        batch_size=1,
+        max_seq_len=input_ids.shape[1] + max_new_tokens,
+        device=input_ids.device,
+        dtype=w.embed_tokens.dtype,
+    )
+    position_ids = torch.arange(input_ids.shape[1], device=input_ids.device).unsqueeze(0)
+    logits = _model(input_ids, w, cfg, cache=cache, position_ids=position_ids)
+
+    for step in range(max_new_tokens):
+        next_token = sample_next_token(logits[:, -1, :], temperature, top_k, top_p)
+        input_ids = torch.cat((input_ids, next_token), dim=1)
+        yield next_token
+        if eos_token_id is not None and bool(torch.eq(next_token, eos_token_id).all().item()):
+            break
+        if step == max_new_tokens - 1:
+            break
+        position_ids = torch.full(
+            (1, 1),
+            input_ids.shape[1] - 1,
+            device=input_ids.device,
+            dtype=torch.long,
+        )
+        logits = _model(next_token, w, cfg, cache=cache, position_ids=position_ids)
 
 
 def _model(

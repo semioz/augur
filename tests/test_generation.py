@@ -103,6 +103,36 @@ def test_generate_stops_when_eos_token_is_selected(monkeypatch) -> None:
     ]
 
 
+def test_generate_stream_yields_tokens_as_they_are_generated(monkeypatch) -> None:
+    cfg = QwenConfig(
+        vocab_size=8,
+        hidden_size=4,
+        intermediate_size=8,
+        num_hidden_layers=0,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+    )
+    calls: list[torch.Tensor] = []
+    greedy_tokens = [5, 6, 7]
+
+    def fake_model(input_ids: torch.Tensor, w: object, cfg: QwenConfig) -> torch.Tensor:
+        calls.append(input_ids.clone())
+        logits = torch.zeros(input_ids.shape[0], input_ids.shape[1], cfg.vocab_size)
+        logits[:, -1, greedy_tokens[len(calls) - 1]] = 1.0
+        return logits
+
+    monkeypatch.setattr(generation, "model", fake_model)
+
+    tokens = list(generation.generate_stream(torch.tensor([[1, 2]]), w=object(), cfg=cfg, max_new_tokens=3))
+
+    assert [token.tolist() for token in tokens] == [[[5]], [[6]], [[7]]]
+    assert [call.tolist() for call in calls] == [
+        [[1, 2]],
+        [[1, 2, 5]],
+        [[1, 2, 5, 6]],
+    ]
+
+
 def test_generate_stops_each_batch_row_after_eos(monkeypatch) -> None:
     cfg = QwenConfig(
         vocab_size=8,

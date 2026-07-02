@@ -1,3 +1,5 @@
+import json
+from collections.abc import Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Protocol
@@ -5,10 +7,12 @@ from uuid import uuid4
 
 import torch
 from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from augur.config import QwenConfig
 from augur.generation import generate
+from augur.generation import generate_stream as generate_token_stream
 from augur.scheduler import AsyncBatchScheduler, GenerationRequest
 from augur.text import apply_stop_strings
 from augur.tokenizer import Tokenizer
@@ -122,6 +126,47 @@ class AugurEngine:
             )
         return responses
 
+    def generate_stream(
+        self,
+        *,
+        prompt: str,
+        max_new_tokens: int,
+        temperature: float,
+        top_k: int | None,
+        top_p: float | None,
+        stop: list[str],
+    ) -> Iterator[str]:
+        input_ids = torch.tensor([self.tokenizer.encode(prompt)], device=self.device)
+        output_token_ids: list[int] = []
+        emitted_text = ""
+
+        with torch.no_grad():
+            for next_token in generate_token_stream(
+                input_ids,
+                self.weights,
+                self.cfg,
+                max_new_tokens=max_new_tokens,
+                use_cache=True,
+                eos_token_id=self.tokenizer.eos_token_id,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+            ):
+                output_token_ids.extend(next_token[0].tolist())
+                text = self.tokenizer.decode(output_token_ids).lstrip()
+                stop_positions = [idx for stop_text in stop if (idx := text.find(stop_text)) != -1]
+                if stop_positions:
+                    text = text[: min(stop_positions)]
+                    delta = text[len(emitted_text) :]
+                    if delta:
+                        yield delta
+                    break
+
+                delta = text[len(emitted_text) :]
+                emitted_text = text
+                if delta:
+                    yield delta
+
     def _encode_prompts(self, prompts: list[str]) -> tuple[torch.Tensor, torch.Tensor, list[int]]:
         encoded = [self.tokenizer.encode(prompt) for prompt in prompts]
         max_len = max(len(ids) for ids in encoded)
@@ -169,4 +214,24 @@ def create_app(engine: TextGenerator) -> FastAPI:
             )
         )
 
+    @app.post("/generate_stream")
+    def generate_stream_endpoint(request: GenerateRequest) -> StreamingResponse:
+        def events() -> Iterator[str]:
+            for text in engine.generate_stream(
+                prompt=request.prompt,
+                max_new_tokens=request.max_new_tokens,
+                temperature=request.temperature,
+                top_k=request.top_k,
+                top_p=request.top_p,
+                stop=request.stop,
+            ):
+                yield sse_event({"text": text})
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(events(), media_type="text/event-stream")
+
     return app
+
+
+def sse_event(data: dict[str, str]) -> str:
+    return f"data: {json.dumps(data)}\n\n"
