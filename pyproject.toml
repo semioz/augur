@@ -7,6 +7,7 @@ dependencies = [
     "torch>=2.5",
     "regex>=2024.0",
     "safetensors>=0.4",
+    "packaging>=24.0",
     "einops>=0.8",
     "fastapi>=0.138.1",
     "uvicorn>=0.49.0",
@@ -17,6 +18,9 @@ dev = [
     "pytest>=8",
     "transformers>=4.40",
     "ruff>=0.7",
+]
+kernel = [
+    "triton>=3.0",
 ]
 
 [project.scripts]
@@ -33,6 +37,9 @@ packages = ["src/augur"]
 testpaths = ["tests"]
 addopts = "-ra"
 pythonpath = ["src"]
+markers = [
+    "gpu_kernel: requires a Triton+CUDA runtime; skipped via the gpu_kernel fixture",
+]
 
 [tool.ruff]
 line-length = 100

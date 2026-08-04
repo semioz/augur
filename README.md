@@ -1,6 +1,6 @@
 # augur
 
-A small Qwen inference engine in PyTorch, built as a correctness reference before Triton/CUDA work.
+A small Qwen inference engine in PyTorch, built as a correctness reference and then accelerated with hand-written Triton kernels (raw CUDA kernels planned).
 
 It loads real Qwen weights, tokenizes prompts, runs transformer forwards, and generates text.
 
@@ -29,6 +29,40 @@ It loads real Qwen weights, tokenizes prompts, runs transformer forwards, and ge
 - **Cache benchmarking**: measures cached vs uncached generation speed, prefill time, decode time, tokens/sec, and CSV output.
 - **Local HTTP server**: serves a simple `/generate` JSON endpoint backed by the same generation path as the CLI.
 - **Hugging Face parity tests**: checks core math against Hugging Face Qwen modules so the implementation stays aligned with real Qwen behavior.
+
+## Kernels
+
+GPU backends live in `src/augur/kernels/`. Each hot op keeps its public function
+in the main `augur` package as the single entry point; on a CUDA device with
+Triton available it dispatches to the kernel, otherwise it falls back to the
+reference PyTorch implementation. The torch path always stays as the fallback
+and the correctness ground truth.
+
+- **Triton RMSNorm** (`src/augur/kernels/rms_norm.py`): first kernel landed.
+  One program per row, fp32 accumulate, matches the torch reference cast order.
+
+Kernels only run when Triton is installed *and* a CUDA device is present —
+`augur.kernels.kernels_available()` gates the dispatch, and kernel tests skip
+on CPU-only machines via the `gpu_kernel` fixture.
+
+Install the kernel extra (GPU box only):
+
+```bash
+uv sync --extra kernel
+```
+
+Run the GPU-gated parity tests on a CUDA machine:
+
+```bash
+uv run pytest tests/test_kernels -v
+```
+
+Upcoming kernels, in porting order (see `docs/superpowers/plans/2026-08-02-triton-kernels.md`):
+
+- **Triton RoPE** (`src/augur/kernels/rope.py`)
+- **Triton fused SwiGLU MLP** (`src/augur/kernels/mlp.py`)
+- **Triton flash attention** over the contiguous KV cache (`src/augur/kernels/flash_attention.py`) — the largest expected speedup
+- **Raw CUDA kernels**: paged/block-table flash attention and custom fused decode land behind the same dispatch seam.
 
 ## Run
 
@@ -128,5 +162,6 @@ uv run ruff check .
 - No presence, frequency, or repetition penalties yet.
 - Prefix cache is core-only for now: batch size 1, cached generation only, no attention masks, no CLI flag yet.
 - No continuous batching scheduler yet.
-- No Triton/CUDA kernels yet.
+- Kernel coverage is partial: only RMSNorm is ported to Triton; RoPE, MLP, and flash attention are still torch (see the Kernels section).
 - No paged attention yet.
+- No raw CUDA kernels yet.

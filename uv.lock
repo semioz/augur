@@ -40,6 +40,7 @@ source = { editable = "." }
 dependencies = [
     { name = "einops" },
     { name = "fastapi" },
+    { name = "packaging" },
     { name = "regex" },
     { name = "safetensors" },
     { name = "torch" },
@@ -57,6 +58,7 @@ dev = [
 requires-dist = [
     { name = "einops", specifier = ">=0.8" },
     { name = "fastapi", specifier = ">=0.138.1" },
+    { name = "packaging", specifier = ">=24.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "regex", specifier = ">=2024.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.7" },
