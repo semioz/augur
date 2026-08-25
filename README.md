@@ -1,12 +1,12 @@
 # augur
 
-A small Qwen inference engine in PyTorch, built as a correctness reference and then accelerated with hand-written Triton kernels (raw CUDA kernels planned).
+A small Qwen inference engine in PyTorch, built as a correctness reference and then accelerated with hand-written Triton-CUDA kernels.
 
-It loads real Qwen weights, tokenizes prompts, runs transformer forwards, and generates text.
+Loads Qwen weights, tokenizes prompts, runs transformer forwards, and generates text.
 
 ## Features
 
-- **Real Qwen weight loading**: loads Qwen checkpoint tensors from `safetensors`, including projection weights and optional attention biases.
+- **Qwen weight loading**: loads Qwen checkpoint tensors from `safetensors`, including projection weights and optional attention biases.
 - **Qwen tokenizer path**: encodes text with Qwen BPE files and decodes generated token ids back to text.
 - **Qwen model config**: uses the Qwen hidden size, attention head counts, key/value head counts, MLP size, RMSNorm epsilon, RoPE theta, and vocabulary size.
 - **RMSNorm**: matches Qwen's normalization layer before attention, before the MLP, and after the final decoder layer.
