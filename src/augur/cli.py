@@ -1,4 +1,6 @@
 import argparse
+import importlib
+import time
 from pathlib import Path
 
 import torch
@@ -9,9 +11,10 @@ from augur.benchmarking import (
     format_benchmark_csv,
     format_benchmark_result,
     format_comparison,
+    tokens_per_second,
 )
 from augur.config import QwenConfig
-from augur.generation import generate
+from augur.generation import generate, generate_speculative
 from augur.kv_cache import format_bytes, kv_cache_nbytes
 from augur.server import AugurEngine, create_app
 from augur.text import apply_stop_strings
@@ -42,6 +45,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     add_bench_args(bench_parser)
     bench_parser.set_defaults(func=run_bench)
 
+    vllm_bench_parser = subparsers.add_parser("bench-vllm", help="Benchmark vLLM as a baseline.")
+    add_vllm_bench_args(vllm_bench_parser)
+    vllm_bench_parser.set_defaults(func=run_bench_vllm)
+
+    speculate_parser = subparsers.add_parser(
+        "speculate", help="Generate with a draft and target model."
+    )
+    add_speculate_args(speculate_parser)
+    speculate_parser.set_defaults(func=run_speculate)
+
     serve_parser = subparsers.add_parser("serve", help="Start the HTTP generation server.")
     add_serve_args(serve_parser)
     serve_parser.set_defaults(func=run_serve)
@@ -71,6 +84,24 @@ def add_bench_args(parser: argparse.ArgumentParser) -> None:
         help="Only run the cached benchmark.",
     )
     parser.add_argument("--csv", action="store_true", help="Print benchmark results as CSV.")
+
+
+def add_speculate_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--model-dir", type=Path, default=MODEL_DIR)
+    parser.add_argument("--draft-model-dir", type=Path, required=True)
+    parser.add_argument("--prompt", default=DEFAULT_PROMPT)
+    parser.add_argument("--max-new-tokens", type=int, default=200)
+    parser.add_argument("--num-draft-tokens", type=int, default=4)
+    add_runtime_args(parser)
+
+
+def add_vllm_bench_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--model-dir", type=Path, default=MODEL_DIR)
+    parser.add_argument("--draft-model-dir", type=Path)
+    parser.add_argument("--num-speculative-tokens", type=int, default=4)
+    parser.add_argument("--prompt", action="append", default=None)
+    parser.add_argument("--max-new-tokens", type=int, default=32)
+    add_runtime_args(parser)
 
 
 def add_serve_args(parser: argparse.ArgumentParser) -> None:
@@ -121,6 +152,32 @@ def run_generate(args: argparse.Namespace) -> None:
         return
     for idx, text in enumerate(generated_texts):
         print(f"[{idx}] {text}")
+
+
+def run_speculate(args: argparse.Namespace) -> None:
+    device = resolve_device(args.device)
+    dtype = resolve_dtype(args.dtype, device)
+    target_cfg = QwenConfig.from_pretrained(args.model_dir)
+    draft_cfg = QwenConfig.from_pretrained(args.draft_model_dir)
+    tokenizer = Tokenizer.from_pretrained(args.model_dir)
+    target_weights = load_weights(
+        args.model_dir / "model.safetensors", target_cfg, device=device, dtype=dtype
+    )
+    draft_weights = load_weights(
+        args.draft_model_dir / "model.safetensors", draft_cfg, device=device, dtype=dtype
+    )
+    input_ids = torch.tensor([tokenizer.encode(args.prompt)], device=device)
+    output_ids = generate_speculative(
+        input_ids,
+        draft_weights,
+        draft_cfg,
+        target_weights,
+        target_cfg,
+        max_new_tokens=args.max_new_tokens,
+        num_draft_tokens=args.num_draft_tokens,
+        eos_token_id=tokenizer.eos_token_id,
+    )
+    print(decode_generated_text(tokenizer, input_ids, output_ids))
 
 
 def run_bench(args: argparse.Namespace) -> None:
@@ -185,6 +242,60 @@ def run_bench(args: argparse.Namespace) -> None:
     print(format_comparison(uncached, cached))
 
 
+def run_bench_vllm(args: argparse.Namespace) -> None:
+    try:
+        vllm = importlib.import_module("vllm")
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "Install vLLM to use this benchmark: uv run --with vllm augur bench-vllm ..."
+        ) from exc
+
+    device = resolve_device(args.device)
+    dtype = {
+        "auto": "half" if device.type == "cuda" else "float",
+        "float32": "float",
+        "float16": "half",
+        "bfloat16": "bfloat16",
+    }[args.dtype]
+    prompts = args.prompt or [DEFAULT_PROMPT]
+    llm_kwargs: dict[str, object] = {
+        "model": str(args.model_dir),
+        "device": device.type,
+        "dtype": dtype,
+    }
+    if args.draft_model_dir is not None:
+        llm_kwargs["speculative_config"] = {
+            "method": "draft_model",
+            "model": str(args.draft_model_dir),
+            "num_speculative_tokens": args.num_speculative_tokens,
+        }
+    llm = vllm.LLM(**llm_kwargs)
+    sampling_params = vllm.SamplingParams(
+        temperature=0.0,
+        max_tokens=args.max_new_tokens,
+        ignore_eos=True,
+    )
+
+    start = time.perf_counter()
+    outputs = llm.generate(prompts, sampling_params)
+    elapsed = time.perf_counter() - start
+    prompt_tokens = sum(len(output.prompt_token_ids) for output in outputs)
+    generated_tokens = sum(
+        len(completion.token_ids) for output in outputs for completion in output.outputs
+    )
+
+    print("variant: vllm")
+    print(f"device: {device}")
+    print(f"dtype: {dtype}")
+    if args.draft_model_dir is not None:
+        print(f"speculative draft model: {args.draft_model_dir}")
+    print(f"batch size: {len(prompts)}")
+    print(f"prompt tokens: {prompt_tokens}")
+    print(f"generated tokens: {generated_tokens}")
+    print(f"total time: {elapsed:.4f}s")
+    print(f"total tokens/sec: {tokens_per_second(generated_tokens, elapsed):.2f}")
+
+
 def run_serve(args: argparse.Namespace) -> None:
     cfg = QwenConfig()
     device = resolve_device(args.device)
@@ -198,7 +309,9 @@ def run_serve(args: argparse.Namespace) -> None:
     uvicorn.run(create_app(engine), host=args.host, port=args.port)
 
 
-def decode_generated_text(tokenizer: Tokenizer, input_ids: torch.Tensor, output_ids: torch.Tensor) -> str:
+def decode_generated_text(
+    tokenizer: Tokenizer, input_ids: torch.Tensor, output_ids: torch.Tensor
+) -> str:
     prompt_len = input_ids.shape[1]
     generated_ids = output_ids[0, prompt_len:]
     return tokenizer.decode(generated_ids.tolist()).lstrip()

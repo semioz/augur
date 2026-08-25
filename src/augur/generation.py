@@ -176,6 +176,168 @@ def generate(
     return input_ids
 
 
+def generate_speculative(
+    input_ids: Tensor,
+    draft_weights: Weights,
+    draft_cfg: QwenConfig,
+    target_weights: Weights,
+    target_cfg: QwenConfig,
+    max_new_tokens: int,
+    num_draft_tokens: int = 4,
+    eos_token_id: int | None = None,
+) -> Tensor:
+    if input_ids.ndim != 2 or input_ids.shape[0] != 1:
+        raise ValueError("speculative decoding currently requires batch size 1")
+    if max_new_tokens < 0:
+        raise ValueError("max_new_tokens must be non-negative")
+    if num_draft_tokens <= 0:
+        raise ValueError("num_draft_tokens must be positive")
+    if draft_cfg.vocab_size != target_cfg.vocab_size:
+        raise ValueError("draft and target models must use the same vocabulary")
+    if max_new_tokens == 0:
+        return input_ids
+
+    max_seq_len = input_ids.shape[1] + max_new_tokens
+    draft_cache = new_kv_cache(
+        draft_cfg,
+        batch_size=1,
+        max_seq_len=max_seq_len,
+        device=input_ids.device,
+        dtype=draft_weights.embed_tokens.dtype,
+    )
+    target_cache = new_kv_cache(
+        target_cfg,
+        batch_size=1,
+        max_seq_len=max_seq_len,
+        device=input_ids.device,
+        dtype=target_weights.embed_tokens.dtype,
+    )
+    prefill_positions = torch.arange(input_ids.shape[1], device=input_ids.device).unsqueeze(0)
+    draft_logits = _model(
+        input_ids,
+        draft_weights,
+        draft_cfg,
+        cache=draft_cache,
+        position_ids=prefill_positions,
+    )
+    target_logits = _model(
+        input_ids,
+        target_weights,
+        target_cfg,
+        cache=target_cache,
+        position_ids=prefill_positions,
+    )
+    output_ids = input_ids
+    pending_target_token: Tensor | None = None
+
+    while output_ids.shape[1] - input_ids.shape[1] < max_new_tokens:
+        remaining = max_new_tokens - (output_ids.shape[1] - input_ids.shape[1])
+        draft_base_len = draft_cache.seq_len
+        proposals: list[Tensor] = []
+        for _ in range(min(num_draft_tokens, remaining)):
+            proposal = torch.argmax(_next_token_logits(draft_logits, None), dim=-1, keepdim=True)
+            proposals.append(proposal)
+            draft_logits = _model(
+                proposal,
+                draft_weights,
+                draft_cfg,
+                cache=draft_cache,
+                position_ids=torch.full(
+                    (1, 1),
+                    draft_cache.seq_len,
+                    device=input_ids.device,
+                    dtype=torch.long,
+                ),
+            )
+            if eos_token_id is not None and bool((proposal == eos_token_id).any()):
+                break
+
+        proposal_ids = torch.cat(proposals, dim=1)
+        target_base_len = target_cache.seq_len
+        target_inputs = (
+            proposal_ids
+            if pending_target_token is None
+            else torch.cat((pending_target_token, proposal_ids), dim=1)
+        )
+        verification_logits = _model(
+            target_inputs,
+            target_weights,
+            target_cfg,
+            cache=target_cache,
+            position_ids=torch.arange(
+                target_base_len,
+                target_base_len + target_inputs.shape[1],
+                device=input_ids.device,
+            ).unsqueeze(0),
+        )
+        expected_logits = (
+            torch.cat((target_logits[:, -1:, :], verification_logits[:, :-1, :]), dim=1)
+            if pending_target_token is None
+            else verification_logits[:, :-1, :]
+        )
+        expected_tokens = torch.argmax(expected_logits, dim=-1)
+        accepted = 0
+        while accepted < proposal_ids.shape[1] and bool(
+            proposal_ids[0, accepted] == expected_tokens[0, accepted]
+        ):
+            accepted += 1
+
+        if accepted == proposal_ids.shape[1]:
+            emitted = proposal_ids
+            pending_target_token = None
+            if remaining > accepted:
+                pending_target_token = torch.argmax(
+                    verification_logits[:, -1, :], dim=-1, keepdim=True
+                )
+                emitted = torch.cat((emitted, pending_target_token), dim=1)
+            output_ids = torch.cat((output_ids, emitted), dim=1)
+            if output_ids.shape[1] - input_ids.shape[1] == max_new_tokens or (
+                eos_token_id is not None and bool((emitted == eos_token_id).any())
+            ):
+                return output_ids
+            if pending_target_token is None:
+                continue
+            draft_logits = _model(
+                pending_target_token,
+                draft_weights,
+                draft_cfg,
+                cache=draft_cache,
+                position_ids=torch.full(
+                    (1, 1),
+                    draft_cache.seq_len,
+                    device=input_ids.device,
+                    dtype=torch.long,
+                ),
+            )
+            continue
+
+        correction = expected_tokens[:, accepted : accepted + 1]
+        emitted = torch.cat((proposal_ids[:, :accepted], correction), dim=1)
+        output_ids = torch.cat((output_ids, emitted), dim=1)
+        if output_ids.shape[1] - input_ids.shape[1] == max_new_tokens or (
+            eos_token_id is not None and bool((emitted == eos_token_id).any())
+        ):
+            return output_ids
+
+        target_cache.seq_len = target_base_len + (pending_target_token is not None) + accepted
+        pending_target_token = correction
+        draft_cache.seq_len = draft_base_len + accepted
+        draft_logits = _model(
+            correction,
+            draft_weights,
+            draft_cfg,
+            cache=draft_cache,
+            position_ids=torch.full(
+                (1, 1),
+                draft_cache.seq_len,
+                device=input_ids.device,
+                dtype=torch.long,
+            ),
+        )
+
+    return output_ids
+
+
 def generate_stream(
     input_ids: Tensor,
     w: Weights,
@@ -266,20 +428,28 @@ def _position_ids_from_attention_mask(attention_mask: Tensor | None) -> Tensor |
 def _next_token_logits(logits: Tensor, attention_mask: Tensor | None) -> Tensor:
     if attention_mask is None or logits.shape[1] == 1:
         return logits[:, -1, :]
-    last_indices = attention_mask.to(torch.long).mul(
-        torch.arange(attention_mask.shape[1], device=attention_mask.device)
-    ).max(dim=1).values
+    last_indices = (
+        attention_mask.to(torch.long)
+        .mul(torch.arange(attention_mask.shape[1], device=attention_mask.device))
+        .max(dim=1)
+        .values
+    )
     return logits[torch.arange(logits.shape[0], device=logits.device), last_indices, :]
 
 
 def _append_attention_mask(attention_mask: Tensor | None, next_token: Tensor) -> Tensor | None:
     if attention_mask is None:
         return None
-    return torch.cat((attention_mask, torch.ones_like(next_token, dtype=attention_mask.dtype)), dim=1)
+    return torch.cat(
+        (attention_mask, torch.ones_like(next_token, dtype=attention_mask.dtype)), dim=1
+    )
 
 
 def _mark_attention_positions(attention_mask: Tensor, position_ids: Tensor) -> Tensor:
-    max_position = int(position_ids.max().item())
+    try:
+        max_position = int(position_ids.max())
+    except RuntimeError as exc:
+        raise ValueError("position_ids must contain at least one position") from exc
     if max_position >= attention_mask.shape[1]:
         padding = torch.zeros(
             attention_mask.shape[0],

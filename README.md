@@ -98,6 +98,37 @@ uv run augur bench \
   --csv
 ```
 
+vLLM baseline (GPU environment with vLLM installed):
+
+```bash
+uv run --with vllm augur bench-vllm \
+  --model-dir models/qwen2.5-1.5b \
+  --draft-model-dir models/qwen2.5-0.5b \
+  --num-speculative-tokens 4 \
+  --max-new-tokens 32 \
+  --device cuda \
+  --dtype float16
+```
+
+Omit the draft options for regular vLLM decoding.
+
+Greedy speculative decoding with compatible Qwen2.5 draft and target models. Download the target first (the default downloader only fetches 0.5B):
+
+```bash
+uv run python scripts/download_weights.py \
+  --model Qwen/Qwen2.5-1.5B \
+  --dest models/qwen2.5-1.5b
+```
+
+```bash
+uv run augur speculate \
+  --model-dir models/qwen2.5-1.5b \
+  --draft-model-dir models/qwen2.5-0.5b \
+  --num-draft-tokens 4 \
+  --device cuda \
+  --dtype float16
+```
+
 HTTP server:
 
 ```bash

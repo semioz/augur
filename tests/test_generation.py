@@ -3,9 +3,11 @@ Run with:
   uv run pytest tests/test_generation.py -v
 """
 
+# pyright: reportArgumentType=false, reportAttributeAccessIssue=false
 import torch
 import pytest
 from types import SimpleNamespace
+from typing import cast
 
 import augur.generation as generation
 from augur.config import QwenConfig
@@ -41,6 +43,104 @@ def test_generate_appends_greedy_tokens(monkeypatch) -> None:
         [[1, 2, 5]],
         [[1, 2, 5, 6]],
     ]
+
+
+def test_generate_speculative_matches_target_greedy_output(monkeypatch) -> None:
+    cfg = QwenConfig(
+        vocab_size=8,
+        hidden_size=4,
+        intermediate_size=8,
+        num_hidden_layers=0,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+    )
+    draft_weights = SimpleNamespace(embed_tokens=torch.empty(0, dtype=torch.float32))
+    target_weights = SimpleNamespace(embed_tokens=torch.empty(0, dtype=torch.float32))
+    draft_tokens = [3, 4, 5]
+    target_tokens = [3, 4, 5]
+
+    def fake_model(
+        input_ids: torch.Tensor,
+        w: object,
+        cfg: QwenConfig,
+        cache: object | None = None,
+        **_: object,
+    ) -> torch.Tensor:
+        assert cache is not None
+        start = cache.seq_len
+        cache.seq_len += input_ids.shape[1]
+        tokens = draft_tokens if w is draft_weights else target_tokens
+        logits = torch.zeros(input_ids.shape[0], input_ids.shape[1], cfg.vocab_size)
+        for position in range(input_ids.shape[1]):
+            token_idx = start + position - 1
+            if token_idx >= 0:
+                logits[0, position, tokens[token_idx]] = 1.0
+        return logits
+
+    monkeypatch.setattr(generation, "_model", fake_model)
+
+    output = generation.generate_speculative(
+        torch.tensor([[1, 2]]),
+        draft_weights=draft_weights,
+        draft_cfg=cfg,
+        target_weights=target_weights,
+        target_cfg=cfg,
+        max_new_tokens=3,
+        num_draft_tokens=2,
+    )
+
+    assert output.tolist() == [[1, 2, 3, 4, 5]]
+
+
+def test_generate_speculative_uses_target_token_after_draft_rejection(monkeypatch) -> None:
+    cfg = QwenConfig(
+        vocab_size=8,
+        hidden_size=4,
+        intermediate_size=8,
+        num_hidden_layers=0,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+    )
+    draft_weights = cast(
+        generation.Weights, SimpleNamespace(embed_tokens=torch.empty(0, dtype=torch.float32))
+    )
+    target_weights = cast(
+        generation.Weights, SimpleNamespace(embed_tokens=torch.empty(0, dtype=torch.float32))
+    )
+    draft_tokens = [7] * 8
+    target_tokens = [3, 4, 5, 6]
+
+    def fake_model(
+        input_ids: torch.Tensor,
+        w: object,
+        cfg: QwenConfig,
+        cache: object | None = None,
+        **_: object,
+    ) -> torch.Tensor:
+        assert cache is not None
+        start = cache.seq_len
+        cache.seq_len += input_ids.shape[1]
+        tokens = draft_tokens if w is draft_weights else target_tokens
+        logits = torch.zeros(input_ids.shape[0], input_ids.shape[1], cfg.vocab_size)
+        for position in range(input_ids.shape[1]):
+            token_idx = start + position - 1
+            if token_idx >= 0:
+                logits[0, position, tokens[token_idx]] = 1.0
+        return logits
+
+    monkeypatch.setattr(generation, "_model", fake_model)
+
+    output = generation.generate_speculative(
+        torch.tensor([[1, 2]]),
+        draft_weights=draft_weights,
+        draft_cfg=cfg,
+        target_weights=target_weights,
+        target_cfg=cfg,
+        max_new_tokens=3,
+        num_draft_tokens=2,
+    )
+
+    assert output.tolist() == [[1, 2, 3, 4, 5]]
 
 
 def test_generate_zero_new_tokens_returns_input() -> None:
@@ -123,7 +223,9 @@ def test_generate_stream_yields_tokens_as_they_are_generated(monkeypatch) -> Non
 
     monkeypatch.setattr(generation, "model", fake_model)
 
-    tokens = list(generation.generate_stream(torch.tensor([[1, 2]]), w=object(), cfg=cfg, max_new_tokens=3))
+    tokens = list(
+        generation.generate_stream(torch.tensor([[1, 2]]), w=object(), cfg=cfg, max_new_tokens=3)
+    )
 
     assert [token.tolist() for token in tokens] == [[[5]], [[6]], [[7]]]
     assert [call.tolist() for call in calls] == [
