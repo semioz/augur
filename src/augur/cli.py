@@ -258,11 +258,7 @@ def run_bench_vllm(args: argparse.Namespace) -> None:
         "bfloat16": "bfloat16",
     }[args.dtype]
     prompts = args.prompt or [DEFAULT_PROMPT]
-    llm_kwargs: dict[str, object] = {
-        "model": str(args.model_dir),
-        "device": device.type,
-        "dtype": dtype,
-    }
+    llm_kwargs: dict[str, object] = {"model": str(args.model_dir), "dtype": dtype}
     if args.draft_model_dir is not None:
         llm_kwargs["speculative_config"] = {
             "method": "draft_model",

@@ -98,6 +98,14 @@ uv run augur bench \
   --csv
 ```
 
+Modal GPU benchmark (downloads the default 0.5B model once into the `augur-models` Volume):
+
+```bash
+uv run --with modal python scripts/modal_gpu.py
+```
+
+Add `--engine vllm` for the vLLM baseline on the same GPU.
+
 vLLM baseline (GPU environment with vLLM installed):
 
 ```bash
