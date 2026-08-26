@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import torch
-from safetensors.torch import load_file
+from safetensors.torch import load_file  # pyright: ignore[reportMissingImports]
 from torch import Tensor
 
 from augur.config import QwenConfig
@@ -25,6 +25,7 @@ class Attention:
     k: Linear
     v: Linear
     o: Linear
+    qkv: Linear | None = None
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,26 @@ def load_weights(
     def rms_norm(prefix: str) -> RMSNorm:
         return RMSNorm(weight=to(f"{prefix}.weight"))
 
+    def attention(prefix: str) -> Attention:
+        q = linear(f"{prefix}.q_proj")
+        k = linear(f"{prefix}.k_proj")
+        v = linear(f"{prefix}.v_proj")
+        if q.bias is None:
+            if k.bias is not None or v.bias is not None:
+                raise ValueError("Q/K/V biases must all be present or absent")
+            qkv_bias = None
+        else:
+            if k.bias is None or v.bias is None:
+                raise ValueError("Q/K/V biases must all be present or absent")
+            qkv_bias = torch.cat((q.bias, k.bias, v.bias))
+        return Attention(
+            q=q,
+            k=k,
+            v=v,
+            o=linear(f"{prefix}.o_proj"),
+            qkv=Linear(weight=torch.cat((q.weight, k.weight, v.weight)), bias=qkv_bias),
+        )
+
     embed_tokens = to("model.embed_tokens.weight")
     expected_embedding_shape = (config.vocab_size, config.hidden_size)
     if embed_tokens.shape != expected_embedding_shape:
@@ -82,12 +103,7 @@ def load_weights(
     layers = tuple(
         DecoderLayer(
             input_layernorm=rms_norm(f"model.layers.{i}.input_layernorm"),
-            self_attn=Attention(
-                q=linear(f"model.layers.{i}.self_attn.q_proj"),
-                k=linear(f"model.layers.{i}.self_attn.k_proj"),
-                v=linear(f"model.layers.{i}.self_attn.v_proj"),
-                o=linear(f"model.layers.{i}.self_attn.o_proj"),
-            ),
+            self_attn=attention(f"model.layers.{i}.self_attn"),
             post_attention_layernorm=rms_norm(f"model.layers.{i}.post_attention_layernorm"),
             mlp=MLP(
                 gate=linear(f"model.layers.{i}.mlp.gate_proj"),

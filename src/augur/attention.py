@@ -2,7 +2,7 @@ import math
 
 import torch
 import torch.nn.functional as F
-from einops import rearrange
+from einops import rearrange  # pyright: ignore[reportMissingImports]
 from torch import Tensor
 
 from augur.config import QwenConfig
@@ -30,21 +30,28 @@ def attention(
     attention_mask: Tensor | None = None,
 ) -> Tensor:
     batch, seq, _ = x.shape
-    # we gotta move the heads dimension before the sequence dimension so attention can compute separate [seq, seq] scores for each head so tranpose
+    if w.qkv is None:
+        q_proj = F.linear(x, w.q.weight, w.q.bias)
+        k_proj = F.linear(x, w.k.weight, w.k.bias)
+        v_proj = F.linear(x, w.v.weight, w.v.bias)
+    else:
+        q_proj, k_proj, v_proj = F.linear(x, w.qkv.weight, w.qkv.bias).split(
+            (w.q.weight.shape[0], w.k.weight.shape[0], w.v.weight.shape[0]), dim=-1
+        )
     q = rearrange(
-        F.linear(x, w.q.weight, w.q.bias),
+        q_proj,
         "batch seq (heads head_dim) -> batch heads seq head_dim",
         heads=cfg.num_attention_heads,
         head_dim=cfg.head_dim,
     )
     k = rearrange(
-        F.linear(x, w.k.weight, w.k.bias),
+        k_proj,
         "batch seq (heads head_dim) -> batch heads seq head_dim",
         heads=cfg.num_key_value_heads,
         head_dim=cfg.head_dim,
     )
     v = rearrange(
-        F.linear(x, w.v.weight, w.v.bias),
+        v_proj,
         "batch seq (heads head_dim) -> batch heads seq head_dim",
         heads=cfg.num_key_value_heads,
         head_dim=cfg.head_dim,
@@ -78,12 +85,15 @@ def attention(
     scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(cfg.head_dim)
     # leaving the upper triangular part of matrix for causal mask, putting -inf for zeroed ones to do softmax later
     mask = _causal_mask(seq, k.shape[2], x.device)
-    scores = scores.masked_fill(mask, float("-inf"))
-    if attention_mask is not None:
-        if attention_mask.shape != (batch, k.shape[2]):
-            raise ValueError("attention_mask must have shape [batch, key_len]")
-        padding_mask = attention_mask.to(device=x.device, dtype=torch.bool)
-        scores = scores.masked_fill(~padding_mask[:, None, None, :], float("-inf"))
+    try:
+        scores = scores.masked_fill(mask, float("-inf"))
+        if attention_mask is not None:
+            if attention_mask.shape != (batch, k.shape[2]):
+                raise ValueError("attention_mask must have shape [batch, key_len]")
+            padding_mask = attention_mask.to(device=x.device, dtype=torch.bool)
+            scores = scores.masked_fill(~padding_mask[:, None, None, :], float("-inf"))
+    except RuntimeError as exc:
+        raise ValueError("attention mask is incompatible with attention scores") from exc
 
     probs = torch.softmax(scores, dim=-1, dtype=torch.float32).to(q.dtype)
     out = torch.matmul(probs, v)

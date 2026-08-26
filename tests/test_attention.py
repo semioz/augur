@@ -4,8 +4,11 @@ Run with:
 """
 
 import torch
-from transformers import Qwen2Config as HFQwen2Config
-from transformers.models.qwen2.modeling_qwen2 import Qwen2Attention, Qwen2RotaryEmbedding
+from transformers import Qwen2Config as HFQwen2Config  # pyright: ignore[reportMissingImports]
+from transformers.models.qwen2.modeling_qwen2 import (  # pyright: ignore[reportMissingImports]
+    Qwen2Attention,
+    Qwen2RotaryEmbedding,
+)
 
 from augur.attention import attention
 from augur.config import QwenConfig
@@ -26,7 +29,9 @@ def _tiny_config() -> QwenConfig:
     )
 
 
-def _build_hf_attention(w: Attention, cfg: QwenConfig) -> tuple[Qwen2Attention, Qwen2RotaryEmbedding]:
+def _build_hf_attention(
+    w: Attention, cfg: QwenConfig
+) -> tuple[Qwen2Attention, Qwen2RotaryEmbedding]:
     hf_cfg = HFQwen2Config(
         vocab_size=cfg.vocab_size,
         hidden_size=cfg.hidden_size,
@@ -86,6 +91,33 @@ def test_attention_matches_hf_qwen() -> None:
     torch.testing.assert_close(
         attention(x, w, cfg, position_ids),
         expected,
+        rtol=1e-5,
+        atol=1e-5,
+    )
+
+
+def test_attention_packed_qkv_matches_separate_projections() -> None:
+    cfg = _tiny_config()
+    torch.manual_seed(0)
+    separate = Attention(
+        q=Linear(torch.randn(cfg.hidden_size, cfg.hidden_size)),
+        k=Linear(torch.randn(cfg.num_key_value_heads * cfg.head_dim, cfg.hidden_size)),
+        v=Linear(torch.randn(cfg.num_key_value_heads * cfg.head_dim, cfg.hidden_size)),
+        o=Linear(torch.randn(cfg.hidden_size, cfg.hidden_size)),
+    )
+    packed = Attention(
+        q=separate.q,
+        k=separate.k,
+        v=separate.v,
+        o=separate.o,
+        qkv=Linear(torch.cat((separate.q.weight, separate.k.weight, separate.v.weight))),
+    )
+    x = torch.randn(2, 5, cfg.hidden_size)
+    position_ids = torch.arange(5).expand(2, -1)
+
+    torch.testing.assert_close(
+        attention(x, packed, cfg, position_ids),
+        attention(x, separate, cfg, position_ids),
         rtol=1e-5,
         atol=1e-5,
     )
@@ -185,7 +217,9 @@ def test_attention_with_paged_cache_matches_contiguous_cache_last_token() -> Non
         dtype=x.dtype,
     )
     attention(x[:, :4, :], w, cfg, position_ids[:, :4], cache=contiguous, layer_idx=0)
-    contiguous_last = attention(x[:, 4:, :], w, cfg, position_ids[:, 4:], cache=contiguous, layer_idx=0)
+    contiguous_last = attention(
+        x[:, 4:, :], w, cfg, position_ids[:, 4:], cache=contiguous, layer_idx=0
+    )
 
     paged = PagedKVCacheState(
         cache=new_paged_kv_cache(
