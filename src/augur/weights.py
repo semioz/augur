@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import torch
-from safetensors.torch import load_file  # pyright: ignore[reportMissingImports]
+from safetensors.torch import load_file
 from torch import Tensor
 
 from augur.config import QwenConfig

@@ -8,6 +8,8 @@ DEFAULT_PROMPT = "Write one short sentence about GPUs."
 @dataclass(frozen=True)
 class ModalRunConfig:
     profile: bool
+    warmup: int
+    runs: int
     engine: str
     gpu: str
     timeout: int
@@ -22,6 +24,8 @@ def parse_runner_args(argv: list[str] | None = None) -> ModalRunConfig:
     parser = argparse.ArgumentParser(description="Run an Augur or vLLM benchmark on Modal.")
     parser.add_argument("--engine", default="augur", choices=["augur", "vllm"])
     parser.add_argument("--profile", action="store_true")
+    parser.add_argument("--warmup", type=int, default=1)
+    parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--gpu", default="A10G")
     parser.add_argument("--timeout", type=int, default=1800)
     parser.add_argument("--model", default="Qwen/Qwen2.5-0.5B")
@@ -33,6 +37,10 @@ def parse_runner_args(argv: list[str] | None = None) -> ModalRunConfig:
 
     if args.profile and args.engine != "augur":
         parser.error("--profile currently supports only --engine augur")
+    if args.warmup < 0:
+        parser.error("--warmup must be non-negative")
+    if args.runs <= 0:
+        parser.error("--runs must be positive")
     if args.timeout <= 0:
         parser.error("--timeout must be positive")
     if args.max_new_tokens < 0:
@@ -42,6 +50,8 @@ def parse_runner_args(argv: list[str] | None = None) -> ModalRunConfig:
 
     return ModalRunConfig(
         profile=args.profile,
+        warmup=args.warmup,
+        runs=args.runs,
         engine=args.engine,
         gpu=args.gpu,
         timeout=args.timeout,

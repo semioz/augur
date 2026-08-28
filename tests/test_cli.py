@@ -62,6 +62,11 @@ def test_run_bench_vllm_reports_end_to_end_generation_throughput(monkeypatch, ca
                 SimpleNamespace(
                     prompt_token_ids=[1, 2],
                     outputs=[SimpleNamespace(token_ids=[3, 4, 5])],
+                    metrics=SimpleNamespace(
+                        arrival_time=1.0,
+                        first_token_time=1.1,
+                        last_token_time=2.0,
+                    ),
                 )
             ]
 
@@ -98,7 +103,6 @@ def test_run_bench_vllm_reports_end_to_end_generation_throughput(monkeypatch, ca
 
     assert calls["llm"] == {
         "model": "weights/qwen",
-        "device": "cuda",
         "dtype": "half",
         "speculative_config": {
             "method": "draft_model",
@@ -117,4 +121,7 @@ def test_run_bench_vllm_reports_end_to_end_generation_throughput(monkeypatch, ca
     assert "prompt tokens: 2" in output
     assert "generated tokens: 3" in output
     assert "total tokens/sec:" in output
+    assert "ttft: 0.1000s" in output
+    assert "decode time: 0.9000s" in output
+    assert "decode tokens/sec: 3.33" in output
     assert "speculative draft model: weights/draft" in output

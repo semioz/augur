@@ -290,6 +290,21 @@ def run_bench_vllm(args: argparse.Namespace) -> None:
     print(f"generated tokens: {generated_tokens}")
     print(f"total time: {elapsed:.4f}s")
     print(f"total tokens/sec: {tokens_per_second(generated_tokens, elapsed):.2f}")
+    metrics = getattr(outputs[0], "metrics", None) if len(outputs) == 1 else None
+    if metrics is not None:
+        arrival_time = getattr(metrics, "arrival_time", None)
+        first_token_time = getattr(metrics, "first_token_time", None)
+        last_token_time = getattr(metrics, "last_token_time", None)
+        if (
+            arrival_time is not None
+            and first_token_time is not None
+            and last_token_time is not None
+        ):
+            ttft = first_token_time - arrival_time
+            decode_seconds = last_token_time - first_token_time
+            print(f"ttft: {ttft:.4f}s")
+            print(f"decode time: {decode_seconds:.4f}s")
+            print(f"decode tokens/sec: {tokens_per_second(generated_tokens, decode_seconds):.2f}")
 
 
 def run_serve(args: argparse.Namespace) -> None:

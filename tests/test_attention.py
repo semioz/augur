@@ -4,8 +4,9 @@ Run with:
 """
 
 import torch
-from transformers import Qwen2Config as HFQwen2Config  # pyright: ignore[reportMissingImports]
-from transformers.models.qwen2.modeling_qwen2 import (  # pyright: ignore[reportMissingImports]
+import augur.attention as attention_module
+from transformers import Qwen2Config as HFQwen2Config
+from transformers.models.qwen2.modeling_qwen2 import (
     Qwen2Attention,
     Qwen2RotaryEmbedding,
 )
@@ -195,6 +196,26 @@ def test_attention_with_cache_matches_full_attention_last_token() -> None:
     cached_last = attention(x[:, 4:, :], w, cfg, position_ids[:, 4:], cache=cache, layer_idx=0)
 
     torch.testing.assert_close(cached_last, full[:, 4:, :], rtol=1e-5, atol=1e-5)
+
+
+def test_cached_single_token_attention_skips_causal_mask(monkeypatch) -> None:
+    cfg = _tiny_config()
+    w = Attention(
+        q=Linear(torch.randn(cfg.hidden_size, cfg.hidden_size)),
+        k=Linear(torch.randn(cfg.num_key_value_heads * cfg.head_dim, cfg.hidden_size)),
+        v=Linear(torch.randn(cfg.num_key_value_heads * cfg.head_dim, cfg.hidden_size)),
+        o=Linear(torch.randn(cfg.hidden_size, cfg.hidden_size)),
+    )
+    x = torch.randn(1, 2, cfg.hidden_size)
+    position_ids = torch.arange(2).unsqueeze(0)
+    cache = new_kv_cache(cfg, batch_size=1, max_seq_len=2, device=x.device, dtype=x.dtype)
+    attention(x[:, :1, :], w, cfg, position_ids[:, :1], cache=cache, layer_idx=0)
+
+    def unexpected_mask(*_args, **_kwargs):
+        raise AssertionError("single-token decode must not build a causal mask")
+
+    monkeypatch.setattr(attention_module, "_causal_mask", unexpected_mask)
+    attention(x[:, 1:, :], w, cfg, position_ids[:, 1:], cache=cache, layer_idx=0)
 
 
 def test_attention_with_paged_cache_matches_contiguous_cache_last_token() -> None:

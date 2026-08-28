@@ -2,7 +2,7 @@ import math
 
 import torch
 import torch.nn.functional as F
-from einops import rearrange  # pyright: ignore[reportMissingImports]
+from einops import rearrange
 from torch import Tensor
 
 from augur.config import QwenConfig
@@ -84,9 +84,10 @@ def attention(
 
     scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(cfg.head_dim)
     # leaving the upper triangular part of matrix for causal mask, putting -inf for zeroed ones to do softmax later
-    mask = _causal_mask(seq, k.shape[2], x.device)
     try:
-        scores = scores.masked_fill(mask, float("-inf"))
+        if seq > 1:
+            mask = _causal_mask(seq, k.shape[2], x.device)
+            scores = scores.masked_fill(mask, float("-inf"))
         if attention_mask is not None:
             if attention_mask.shape != (batch, k.shape[2]):
                 raise ValueError("attention_mask must have shape [batch, key_len]")

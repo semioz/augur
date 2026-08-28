@@ -4,7 +4,7 @@ from pathlib import Path
 import modal
 
 from augur.cli import main as augur_main
-from augur.modal_runner import ModalRunConfig, build_bench_args, parse_runner_args  # pyright: ignore[reportMissingImports]
+from augur.modal_runner import ModalRunConfig, build_bench_args, parse_runner_args
 
 app = modal.App("augur-gpu")
 models = modal.Volume.from_name("augur-models", create_if_missing=True)
@@ -63,7 +63,12 @@ def run_remote(config: ModalRunConfig) -> None:
             check=True,
         )
         return
-    augur_main(build_bench_args(config))
+    for run in range(config.warmup):
+        print(f"warmup {run + 1}/{config.warmup}")
+        augur_main(build_bench_args(config))
+    for run in range(config.runs):
+        print(f"measurement {run + 1}/{config.runs}")
+        augur_main(build_bench_args(config))
 
 
 def make_gpu_function(config: ModalRunConfig):
