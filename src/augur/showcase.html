@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Augur — Qwen inference, made inspectable</title>
+    <style>
+      :root {
+        --paper: #f6f3ed;
+        --ink: #1e2430;
+        --muted: #6c7280;
+        --line: #ddd8cf;
+        --panel: rgba(255, 255, 255, 0.72);
+        --accent: #425b8a;
+        --accent-dark: #293e68;
+        --signal: #a84b39;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--paper);
+        color: var(--ink);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      body::before {
+        background: radial-gradient(circle at 80% 5%, #dbe7ef 0, transparent 24rem), radial-gradient(circle at 8% 52%, #ece0cc 0, transparent 25rem);
+        content: "";
+        inset: 0;
+        pointer-events: none;
+        position: fixed;
+        z-index: -1;
+      }
+      main { margin: 0 auto; max-width: 1120px; padding: 24px 28px 64px; }
+      nav { align-items: center; display: flex; justify-content: space-between; }
+      .brand { align-items: center; display: flex; font-family: Georgia, serif; font-size: 1.35rem; font-weight: 700; gap: 10px; letter-spacing: -.03em; }
+      .mark { align-items: center; background: var(--ink); color: var(--paper); display: grid; font-family: Georgia, serif; font-size: 1.15rem; height: 30px; place-items: center; width: 30px; }
+      .nav-meta { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .73rem; letter-spacing: .04em; }
+      .eyebrow { color: var(--signal); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .72rem; font-weight: 700; letter-spacing: .11em; margin: 78px 0 17px; }
+      h1 { font-family: Georgia, "Times New Roman", serif; font-size: clamp(2.8rem, 7vw, 5.5rem); font-weight: 500; letter-spacing: -.065em; line-height: .95; margin: 0; max-width: 820px; }
+      .lede { color: #4c5360; font-size: 1.1rem; line-height: 1.65; margin: 28px 0 0; max-width: 650px; }
+      .metrics { display: flex; gap: 32px; margin: 44px 0 56px; }
+      .metric { border-left: 1px solid var(--line); padding-left: 13px; }
+      .metric strong { display: block; font-family: Georgia, serif; font-size: 1.42rem; font-weight: 500; }
+      .metric span { color: var(--muted); display: block; font-size: .72rem; margin-top: 3px; text-transform: uppercase; letter-spacing: .07em; }
+      .workbench { display: grid; gap: 18px; grid-template-columns: minmax(0, 1.7fr) minmax(240px, .7fr); }
+      .panel { background: var(--panel); border: 1px solid var(--line); box-shadow: 0 18px 60px rgba(45, 48, 55, .06); }
+      .chat { min-height: 495px; padding: 24px; }
+      .panel-top { align-items: center; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; padding-bottom: 16px; }
+      .label { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .71rem; letter-spacing: .07em; text-transform: uppercase; }
+      .status { align-items: center; color: #436546; display: flex; font-size: .76rem; gap: 7px; }
+      .dot { background: #72a471; border-radius: 50%; height: 7px; width: 7px; }
+      .conversation { display: grid; gap: 24px; min-height: 272px; padding: 28px 0; }
+      .message-label { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .7rem; margin-bottom: 8px; text-transform: uppercase; }
+      .prompt-text { font-family: Georgia, serif; font-size: 1.35rem; line-height: 1.35; }
+      #response { font-family: Georgia, serif; font-size: 1.12rem; line-height: 1.6; min-height: 48px; }
+      #response-metrics { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .72rem; margin-top: 11px; min-height: 1em; }
+      .cursor { animation: blink .9s step-end infinite; border-right: 1px solid var(--ink); margin-left: 2px; }
+      @keyframes blink { 50% { border-color: transparent; } }
+      form { border-top: 1px solid var(--line); padding-top: 17px; }
+      textarea { background: #fffdf9; border: 1px solid var(--line); color: var(--ink); font: inherit; min-height: 76px; padding: 12px; resize: vertical; width: 100%; }
+      textarea:focus { border-color: var(--accent); outline: 2px solid #dce6f2; }
+      .controls { align-items: center; display: flex; gap: 10px; justify-content: space-between; margin-top: 10px; }
+      .token-control { align-items: center; color: var(--muted); display: flex; font-size: .8rem; gap: 8px; }
+      input { background: transparent; border: 1px solid var(--line); padding: 6px; width: 58px; }
+      button { border: 0; cursor: pointer; font: inherit; }
+      .send { background: var(--accent); color: white; padding: 9px 15px; }
+      .send:hover { background: var(--accent-dark); }
+      .stop { background: transparent; color: var(--signal); display: none; padding: 9px 5px; }
+      .side { display: grid; gap: 18px; align-content: start; }
+      .side section { padding: 22px; }
+      .side h2 { font-family: Georgia, serif; font-size: 1.2rem; font-weight: 500; margin: 0 0 16px; }
+      dl { display: grid; gap: 12px; margin: 0; }
+      dl div { border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; padding-bottom: 9px; }
+      dt { color: var(--muted); font-size: .78rem; } dd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .75rem; margin: 0; }
+      .examples { display: grid; gap: 8px; }
+      .example { background: transparent; border: 1px solid var(--line); color: var(--ink); font-size: .82rem; padding: 10px; text-align: left; }
+      .example:hover { background: #ece8df; }
+      footer { color: var(--muted); font-size: .77rem; margin-top: 30px; }
+      @media (max-width: 720px) { main { padding: 20px 16px 40px; } .eyebrow { margin-top: 56px; } .workbench { grid-template-columns: 1fr; } .metrics { gap: 18px; } .nav-meta { display: none; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <nav><div class="brand"><span class="mark">A</span>Augur</div></nav>
+      <div class="workbench" style="margin-top: 74px">
+        <section class="panel chat">
+          <div class="panel-top"><span class="label">Streaming workspace</span><span class="status"><i class="dot"></i> ready</span></div>
+          <div class="conversation"><div><div class="message-label">Try Augur</div><div class="prompt-text">Ask a short question to the reference engine.</div></div><div><div class="message-label">Response</div><div id="response">The response will appear here.</div><div id="response-metrics"></div></div></div>
+          <form id="generation-form"><textarea id="prompt" maxlength="800" placeholder="Write one short sentence about GPUs.">Write one short sentence about GPUs.</textarea><div class="controls"><label class="token-control">Max tokens <input id="max-tokens" type="number" min="1" max="128" value="64" /></label><div><button class="stop" id="stop" type="button">Stop</button><button class="send" id="send" type="submit">Generate →</button></div></div></form>
+        </section>
+        <aside class="side"><section class="panel"><h2>Runtime</h2><dl><div><dt>model</dt><dd>Qwen2.5-0.5B</dd></div><div><dt>precision</dt><dd>FP16</dd></div><div><dt>execution</dt><dd>PyTorch</dd></div><div><dt>stream</dt><dd>SSE</dd></div></dl></section><section class="panel"><h2>Examples</h2><div class="examples"><button class="example" data-prompt="Explain KV caching in one paragraph.">Explain KV caching</button><button class="example" data-prompt="What makes a GPU good at matrix multiplication?">Ask about GPUs</button><button class="example" data-prompt="Write a haiku about compiler optimizations.">Write a haiku</button></div></section></aside>
+      </div>
+      <footer>Scale-to-zero demo · First request may take longer while a GPU starts · Requests are capped at 128 generated tokens.</footer>
+    </main>
+    <script>
+      const form = document.querySelector("#generation-form");
+      const prompt = document.querySelector("#prompt");
+      const maxTokens = document.querySelector("#max-tokens");
+      const response = document.querySelector("#response");
+      const responseMetrics = document.querySelector("#response-metrics");
+      const send = document.querySelector("#send");
+      const stop = document.querySelector("#stop");
+      let controller;
+      document.querySelectorAll(".example").forEach((button) => button.addEventListener("click", () => { prompt.value = button.dataset.prompt; prompt.focus(); }));
+      stop.addEventListener("click", () => controller?.abort());
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const text = prompt.value.trim();
+        if (!text) return;
+        controller = new AbortController();
+        response.textContent = "";
+        responseMetrics.textContent = "";
+        response.classList.add("cursor");
+        send.disabled = true;
+        stop.style.display = "inline";
+        try {
+          const result = await fetch("/generate_stream", { method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal, body: JSON.stringify({ prompt: text, max_new_tokens: Math.min(128, Math.max(1, Number(maxTokens.value) || 64)) }) });
+          if (!result.ok || !result.body) throw new Error("The demo is unavailable. Please try again shortly.");
+          const reader = result.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const events = buffer.split("\n\n");
+            buffer = events.pop();
+            for (const item of events) {
+              const payload = item.replace(/^data: /m, "").trim();
+              if (!payload || payload === "[DONE]") continue;
+              const event = JSON.parse(payload);
+              if (event.text) response.textContent += event.text;
+              if (event.tokens_per_second) responseMetrics.textContent = `${event.generated_tokens} tokens · ${event.tokens_per_second.toFixed(1)} tok/s`;
+            }
+          }
+        } catch (error) {
+          if (error.name !== "AbortError") response.textContent = error.message;
+        } finally {
+          response.classList.remove("cursor");
+          send.disabled = false;
+          stop.style.display = "none";
+          controller = undefined;
+        }
+      });
+    </script>
+  </body>
+</html>

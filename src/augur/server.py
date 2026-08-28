@@ -1,5 +1,6 @@
 import json
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Protocol
@@ -21,7 +22,7 @@ from augur.weights import Weights, load_weights
 
 class GenerateRequest(BaseModel):
     prompt: str
-    max_new_tokens: int = Field(default=32, ge=0)
+    max_new_tokens: int = Field(default=32, ge=0, le=128)
     temperature: float = Field(default=0.0, ge=0.0)
     top_k: int | None = Field(default=None, ge=1)
     top_p: float | None = Field(default=None, gt=0.0, le=1.0)
@@ -135,6 +136,7 @@ class AugurEngine:
         top_k: int | None,
         top_p: float | None,
         stop: list[str],
+        on_token: Callable[[], None] | None = None,
     ) -> Iterator[str]:
         input_ids = torch.tensor([self.tokenizer.encode(prompt)], device=self.device)
         output_token_ids: list[int] = []
@@ -152,6 +154,8 @@ class AugurEngine:
                 top_k=top_k,
                 top_p=top_p,
             ):
+                if on_token is not None:
+                    on_token()
                 output_token_ids.extend(next_token[0].tolist())
                 text = self.tokenizer.decode(output_token_ids).lstrip()
                 stop_positions = [idx for stop_text in stop if (idx := text.find(stop_text)) != -1]
@@ -217,6 +221,13 @@ def create_app(engine: TextGenerator) -> FastAPI:
     @app.post("/generate_stream")
     def generate_stream_endpoint(request: GenerateRequest) -> StreamingResponse:
         def events() -> Iterator[str]:
+            started_at = time.perf_counter()
+            generated_tokens = 0
+
+            def count_token() -> None:
+                nonlocal generated_tokens
+                generated_tokens += 1
+
             for text in engine.generate_stream(
                 prompt=request.prompt,
                 max_new_tokens=request.max_new_tokens,
@@ -224,8 +235,16 @@ def create_app(engine: TextGenerator) -> FastAPI:
                 top_k=request.top_k,
                 top_p=request.top_p,
                 stop=request.stop,
+                on_token=count_token,
             ):
                 yield sse_event({"text": text})
+            elapsed = max(time.perf_counter() - started_at, 1e-6)
+            yield sse_event(
+                {
+                    "generated_tokens": generated_tokens,
+                    "tokens_per_second": generated_tokens / elapsed,
+                }
+            )
             yield "data: [DONE]\n\n"
 
         return StreamingResponse(events(), media_type="text/event-stream")
@@ -233,5 +252,5 @@ def create_app(engine: TextGenerator) -> FastAPI:
     return app
 
 
-def sse_event(data: dict[str, str]) -> str:
+def sse_event(data: dict[str, object]) -> str:
     return f"data: {json.dumps(data)}\n\n"

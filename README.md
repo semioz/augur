@@ -1,78 +1,52 @@
-# augur
+# Augur
 
-A small Qwen inference engine in PyTorch, built as a correctness reference and then accelerated with hand-written Triton-CUDA kernels.
+A compact Qwen2.5 inference runtime for studying and benchmarking the mechanics of LLM serving. Augur makes the complete path—from checkpoint loading through cached token-by-token decode—explicit, testable, and easy to modify.
 
-Loads Qwen weights, tokenizes prompts, runs transformer forwards, and generates text.
+It provides a PyTorch reference implementation validated against Hugging Face, plus optional Triton kernels behind the same interfaces. The goal is not to replicate a production scheduler: it is to establish a correct baseline, profile the real decode workload, and retain only optimizations that improve measured performance.
 
-## Features
+**Try the hosted A10G demo:** [semioz--augur-showcase-augurshowcase-web.modal.run](https://semioz--augur-showcase-augurshowcase-web.modal.run)
 
-- **Qwen weight loading**: loads Qwen checkpoint tensors from `safetensors`, including projection weights and optional attention biases.
-- **Qwen tokenizer path**: encodes text with Qwen BPE files and decodes generated token ids back to text.
-- **Qwen model config**: uses the Qwen hidden size, attention head counts, key/value head counts, MLP size, RMSNorm epsilon, RoPE theta, and vocabulary size.
-- **RMSNorm**: matches Qwen's normalization layer before attention, before the MLP, and after the final decoder layer.
-- **RoPE**: applies rotary position embeddings to query and key tensors so attention understands token positions.
-- **Grouped-query attention**: supports Qwen's layout where many query heads share fewer key/value heads.
-- **Causal masking**: prevents each token from attending to future tokens during generation.
-- **Padding masks**: supports right-padded prompt batches so padded tokens do not affect attention or next-token selection.
-- **Qwen MLP**: implements the SwiGLU feed-forward path used by Qwen.
-- **Decoder blocks**: mirrors the transformer block structure: norm, attention, residual, norm, MLP, residual.
-- **Full forward pass**: turns token ids into logits through embeddings, decoder layers, final norm, and LM head.
-- **Greedy generation**: generates text by repeatedly choosing the highest-probability next token.
-- **Sampling controls**: supports temperature, top-k, and top-p token selection.
-- **EOS stopping**: stops generation when each sequence emits the configured end-of-sequence token.
-- **Stop strings**: trims decoded CLI output at user-provided stop sequences.
-- **Prefill/decode split**: processes the prompt once, then decodes one token at a time.
-- **Preallocated KV-cache**: stores key/value tensors in fixed cache memory instead of recomputing the whole prompt every token.
-- **Manual prefix cache API**: can prefill and reuse a single-sequence prefix cache for cached generation.
-- **Static batched generation**: accepts multiple prompts in one fixed batch through the CLI.
-- **KV-cache memory accounting**: reports estimated cache memory for benchmark runs.
-- **Cache benchmarking**: measures cached vs uncached generation speed, prefill time, decode time, tokens/sec, and CSV output.
-- **Local HTTP server**: serves a simple `/generate` JSON endpoint backed by the same generation path as the CLI.
-- **Hugging Face parity tests**: checks core math against Hugging Face Qwen modules so the implementation stays aligned with real Qwen behavior.
+## What is here
 
-## Kernels
+- Qwen2.5 tokenizer, checkpoint loader, RoPE, grouped-query attention, SwiGLU MLP, RMSNorm, and full LM forward pass
+- Cached generation with contiguous or paged KV storage, batched prompts, temperature/top-k/top-p sampling, EOS handling, and stop strings
+- Hugging Face parity tests for the core Qwen math
+- Local benchmarks that separate prefill from decode, plus a Modal A10G runner and a vLLM baseline
+- A small FastAPI server with JSON generation and Server-Sent Events streaming
 
-GPU backends live in `src/augur/kernels/`. Each hot op keeps its public function
-in the main `augur` package as the single entry point; on a CUDA device with
-Triton available it dispatches to the kernel, otherwise it falls back to the
-reference PyTorch implementation. The torch path always stays as the fallback
-and the correctness ground truth.
+## Install and run
 
-- **Triton RMSNorm** (`src/augur/kernels/rms_norm.py`): first kernel landed.
-  One program per row, fp32 accumulate, matches the torch reference cast order.
-
-Kernels only run when Triton is installed *and* a CUDA device is present —
-`augur.kernels.kernels_available()` gates the dispatch, and kernel tests skip
-on CPU-only machines via the `gpu_kernel` fixture.
-
-Install the kernel extra (GPU box only):
-
-```bash
-uv sync --extra kernel
-```
-
-Run the GPU-gated parity tests on a CUDA machine:
-
-```bash
-uv run pytest tests/test_kernels -v
-```
-
-Upcoming kernels, in porting order (see `docs/superpowers/plans/2026-08-02-triton-kernels.md`):
-
-- **Triton RoPE** (`src/augur/kernels/rope.py`)
-- **Triton fused SwiGLU MLP** (`src/augur/kernels/mlp.py`)
-- **Triton flash attention** over the contiguous KV cache (`src/augur/kernels/flash_attention.py`) — the largest expected speedup
-- **Raw CUDA kernels**: paged/block-table flash attention and custom fused decode land behind the same dispatch seam.
-
-## Run
+Python 3.12+ and [uv](https://docs.astral.sh/uv/) are required.
 
 ```bash
 uv sync
 uv run python scripts/download_weights.py
-uv run augur generate --prompt "Write one short sentence about GPUs." --max-new-tokens 40
+uv run augur generate \
+  --prompt "Write one short sentence about GPUs." \
+  --max-new-tokens 40
 ```
 
-Batched generation:
+The downloader stores the default `Qwen/Qwen2.5-0.5B` checkpoint in `models/qwen2.5-0.5b/`. To use the optional Triton kernel path on a CUDA machine:
+
+```bash
+uv sync --extra kernel
+uv run pytest tests/test_kernels -v
+```
+
+## Generate
+
+By default generation is greedy. Add sampling controls when needed:
+
+```bash
+uv run augur generate \
+  --prompt "Write one sentence about GPUs." \
+  --temperature 0.8 \
+  --top-k 40 \
+  --top-p 0.9 \
+  --max-new-tokens 64
+```
+
+Pass `--prompt` more than once for a fixed batch:
 
 ```bash
 uv run augur generate \
@@ -82,125 +56,75 @@ uv run augur generate \
   --stop "Human:"
 ```
 
-Benchmark:
+## Server
+
+Start the local API:
 
 ```bash
-uv run augur bench --max-new-tokens 32
+uv run augur serve --device cpu --dtype float32
 ```
 
-Batched benchmark with CSV output:
-
-```bash
-uv run augur bench \
-  --prompt "Write one sentence about GPUs." \
-  --prompt "Write one sentence about CPUs." \
-  --max-new-tokens 32 \
-  --csv
-```
-
-Modal GPU benchmark (downloads the default 0.5B model once into the `augur-models` Volume):
-
-```bash
-uv run --with modal python scripts/modal_gpu.py
-```
-
-Add `--engine vllm` for the vLLM baseline on the same GPU.
-
-vLLM baseline (GPU environment with vLLM installed):
-
-```bash
-uv run --with vllm augur bench-vllm \
-  --model-dir models/qwen2.5-1.5b \
-  --draft-model-dir models/qwen2.5-0.5b \
-  --num-speculative-tokens 4 \
-  --max-new-tokens 32 \
-  --device cuda \
-  --dtype float16
-```
-
-Omit the draft options for regular vLLM decoding.
-
-Greedy speculative decoding with compatible Qwen2.5 draft and target models. Download the target first (the default downloader only fetches 0.5B):
-
-```bash
-uv run python scripts/download_weights.py \
-  --model Qwen/Qwen2.5-1.5B \
-  --dest models/qwen2.5-1.5b
-```
-
-```bash
-uv run augur speculate \
-  --model-dir models/qwen2.5-1.5b \
-  --draft-model-dir models/qwen2.5-0.5b \
-  --num-draft-tokens 4 \
-  --device cuda \
-  --dtype float16
-```
-
-HTTP server:
-
-```bash
-uv run augur serve \
-  --model-dir models/qwen2.5-0.5b \
-  --host 127.0.0.1 \
-  --port 8000 \
-  --device cpu \
-  --dtype float32
-```
-
-Generate through HTTP:
+Generate JSON with `POST /generate`:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/generate \
   -H "Content-Type: application/json" \
-  -d '{
-    "prompt": "Write one short sentence about GPUs.",
-    "max_new_tokens": 32,
-    "temperature": 0.0
-  }'
+  -d '{"prompt":"Write one short sentence about GPUs.","max_new_tokens":32}'
 ```
 
-Stream generated text with Server-Sent Events:
+`POST /generate_stream` emits token text as SSE; `GET /health` reports server health.
+
+## Performance
+
+The current benchmark workload is Modal A10G, Qwen2.5-0.5B FP16, batch 1, a 7-token prompt, and 256 generated tokens. The runner warms the GPU process once, then reports three measurements.
+
+| Engine | Warmed total throughput |
+| --- | ---: |
+| Augur | 48.35 tok/s |
+| vLLM | 300.38 tok/s |
+
+Packed QKV projections and bypassing the redundant causal mask during single-token decode improved Augur throughput by 4% and 8.4%, respectively. vLLM remains substantially faster because it has a production scheduler and optimized execution path; this comparison is directional, not an apples-to-apples serving benchmark.
+
+Run Augur on the same workload:
 
 ```bash
-curl -N -X POST http://127.0.0.1:8000/generate_stream \
-  -H "Content-Type: application/json" \
-  -d '{
-    "prompt": "Write one short sentence about GPUs.",
-    "max_new_tokens": 32,
-    "temperature": 0.0
-  }'
+uv run --with modal python scripts/modal_gpu.py \
+  --warmup 1 --runs 3 --max-new-tokens 256
 ```
 
-The streaming endpoint emits chunks like:
+Append `--engine vllm` for the vLLM baseline. See [the benchmark log](docs/benchmark-log.md) for raw runs, profiles, rejected experiments, and methodology.
+
+## Architecture
 
 ```text
-data: {"text": "GPUs"}
-
-data: {"text": " are"}
-
-data: [DONE]
+prompt → tokenizer → prefill → KV cache → one-token decode loop → sampled tokens
 ```
 
-Health check:
+| Area | Role |
+| --- | --- |
+| `config.py`, `weights.py`, `tokenizer.py` | Qwen configuration, tensors, and text/token conversion |
+| `model.py`, `block.py`, `attention.py`, `mlp.py` | Transformer forward pass |
+| `generation.py`, `sampling.py` | Cached generation and token selection |
+| `kv_cache.py`, `paged_kv_cache.py`, `prefix_cache.py` | Cache allocation and reuse |
+| `benchmarking.py`, `modal_runner.py` | Reproducible measurement harness |
+| `kernels/` | Optional Triton implementations behind PyTorch fallbacks |
+
+## Benchmark and develop
 
 ```bash
-curl http://127.0.0.1:8000/health
-```
+# Compare cached and uncached generation locally.
+uv run augur bench --max-new-tokens 32
 
-Test:
+# Machine-readable benchmark output.
+uv run augur bench --max-new-tokens 32 --csv
 
-```bash
+# Run correctness and style checks.
 uv run pytest -v
 uv run ruff check .
 ```
 
-## Not Yet
+`augur speculate` runs greedy draft-model speculative decoding. `augur --help` lists all CLI options.
 
-- Only Qwen2.5-0.5B is targeted right now.
-- No presence, frequency, or repetition penalties yet.
-- Prefix cache is core-only for now: batch size 1, cached generation only, no attention masks, no CLI flag yet.
-- No continuous batching scheduler yet.
-- Kernel coverage is partial: only RMSNorm is ported to Triton; RoPE, MLP, and flash attention are still torch (see the Kernels section).
-- No paged attention yet.
-- No raw CUDA kernels yet.
+## Current scope
+
+Augur currently targets Qwen2.5-0.5B. It is a single-process reference engine, not a production serving stack: it has no continuous batching scheduler or paged-attention kernel. RMSNorm is the only Triton kernel today; attention, RoPE, and MLP use the PyTorch reference path.
