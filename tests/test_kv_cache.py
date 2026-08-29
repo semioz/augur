@@ -60,6 +60,32 @@ def test_write_kv_tracks_lengths_for_each_batch_row() -> None:
     assert cache.seq_len == 3
 
 
+def test_write_kv_writes_to_selected_cache_slots() -> None:
+    cfg = tiny_cfg()
+    cache = new_kv_cache(
+        cfg,
+        batch_size=3,
+        max_seq_len=4,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+    )
+    key = torch.randn(1, 1, 1, 4)
+    value = torch.randn_like(key)
+
+    cached_key, _ = write_kv(
+        cache,
+        layer_idx=0,
+        position_ids=torch.tensor([[0]]),
+        key=key,
+        value=value,
+        cache_slots=torch.tensor([2]),
+    )
+
+    assert cache.seq_lens.tolist() == [0, 0, 1]
+    assert cached_key.shape == (1, 1, 1, 4)
+    torch.testing.assert_close(cached_key, key)
+
+
 def test_cache_attention_mask_hides_unwritten_positions() -> None:
     cfg = tiny_cfg()
     cache = new_kv_cache(

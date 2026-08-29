@@ -19,6 +19,7 @@ def model(
     paged_cache: PagedKVCacheState | None = None,
     position_ids: Tensor | None = None,
     attention_mask: Tensor | None = None,
+    cache_slots: Tensor | None = None,
 ) -> Tensor:
     if cache is not None and paged_cache is not None:
         raise ValueError("cache and paged_cache cannot both be provided")
@@ -36,7 +37,7 @@ def model(
         ).expand(batch, -1)
 
     if cache is not None:
-        cache_mask = cache_attention_mask(cache, position_ids)
+        cache_mask = cache_attention_mask(cache, position_ids, cache_slots)
         attention_mask = cache_mask if attention_mask is None else attention_mask.to(torch.bool) & cache_mask
 
     x = F.embedding(input_ids, w.embed_tokens)
@@ -55,6 +56,7 @@ def model(
             layer_idx=layer_idx,
             attention_mask=attention_mask,
             rope=rope,
+            cache_slots=cache_slots,
             **kwargs,
         )
 

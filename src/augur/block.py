@@ -19,6 +19,7 @@ def block(
     layer_idx: int | None = None,
     attention_mask: Tensor | None = None,
     rope: tuple[Tensor, Tensor] | None = None,
+    cache_slots: Tensor | None = None,
 ) -> Tensor:
     x = x + attention(
         rms_norm(x, w.input_layernorm, cfg.rms_norm_eps),
@@ -30,6 +31,7 @@ def block(
         layer_idx=layer_idx,
         attention_mask=attention_mask,
         rope=rope,
+        cache_slots=cache_slots,
     )
     x = x + mlp(
         rms_norm(x, w.post_attention_layernorm, cfg.rms_norm_eps),

@@ -39,8 +39,12 @@ def new_kv_cache(
     )
 
 
-def cache_attention_mask(cache: KVCache, position_ids: Tensor | None = None) -> Tensor:
-    seq_lens = cache.seq_lens
+def cache_attention_mask(
+    cache: KVCache,
+    position_ids: Tensor | None = None,
+    cache_slots: Tensor | None = None,
+) -> Tensor:
+    seq_lens = cache.seq_lens if cache_slots is None else cache.seq_lens[cache_slots]
     if position_ids is not None:
         seq_lens = torch.maximum(
             seq_lens,
@@ -91,17 +95,26 @@ def write_kv(
     position_ids: Tensor,
     key: Tensor,
     value: Tensor,
+    cache_slots: Tensor | None = None,
 ) -> tuple[Tensor, Tensor]:
     if key.shape != value.shape:
         raise ValueError("key and value must have the same shape")
 
     batch, num_heads, seq, head_dim = key.shape
     expected_shape = cache.keys.shape
+    if cache_slots is None:
+        cache_slots = torch.arange(batch, device=cache.keys.device)
+    else:
+        cache_slots = cache_slots.to(device=cache.keys.device, dtype=torch.long)
+    if cache_slots.shape != (batch,) or cache_slots.numel() != cache_slots.unique().numel():
+        raise ValueError("cache_slots must contain one unique slot per batch row")
+    if cache_slots.numel() and (cache_slots.min() < 0 or cache_slots.max() >= expected_shape[1]):
+        raise ValueError("cache_slots is outside the cache batch range")
     if not 0 <= layer_idx < expected_shape[0]:
         raise ValueError(f"layer_idx {layer_idx} is outside the cache layer range")
     if position_ids.shape != (batch, seq):
         raise ValueError("position_ids must have shape [batch, seq]")
-    if (batch, num_heads, head_dim) != (expected_shape[1], expected_shape[2], expected_shape[4]):
+    if (num_heads, head_dim) != (expected_shape[2], expected_shape[4]):
         raise ValueError("key/value shape does not match cache shape")
     if key.device != cache.keys.device or value.device != cache.values.device:
         raise ValueError("key/value tensors must be on the same device as the cache")
@@ -115,15 +128,20 @@ def write_kv(
 
     for batch_idx in range(batch):
         positions = position_ids[batch_idx].to(device=cache.keys.device)
-        cache.keys[layer_idx, batch_idx, :, positions, :] = key[batch_idx]
-        cache.values[layer_idx, batch_idx, :, positions, :] = value[batch_idx]
+        slot = cache_slots[batch_idx]
+        cache.keys[layer_idx, slot, :, positions, :] = key[batch_idx]
+        cache.values[layer_idx, slot, :, positions, :] = value[batch_idx]
 
     cache.seq_lens = torch.maximum(
         cache.seq_lens,
-        position_ids.to(device=cache.seq_lens.device).max(dim=1).values + 1,
+        torch.zeros_like(cache.seq_lens).scatter(
+            0,
+            cache_slots,
+            position_ids.to(device=cache.seq_lens.device).max(dim=1).values + 1,
+        ),
     )
     cache.seq_len = max(cache.seq_len, max_position + 1)
     return (
-        cache.keys[layer_idx, :, :, : cache.seq_len, :],
-        cache.values[layer_idx, :, :, : cache.seq_len, :],
+        cache.keys[layer_idx, cache_slots, :, : cache.seq_len, :],
+        cache.values[layer_idx, cache_slots, :, : cache.seq_len, :],
     )
