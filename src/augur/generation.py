@@ -11,6 +11,58 @@ from augur.sampling import sample_next_token
 from augur.weights import Weights
 
 
+class FixedSlotDecoder:
+    def __init__(
+        self,
+        w: Weights,
+        cfg: QwenConfig,
+        *,
+        max_slots: int,
+        max_seq_len: int,
+    ) -> None:
+        if max_slots <= 0 or max_seq_len <= 0:
+            raise ValueError("max_slots and max_seq_len must be positive")
+        self.w = w
+        self.cfg = cfg
+        self.cache = new_kv_cache(
+            cfg,
+            batch_size=max_slots,
+            max_seq_len=max_seq_len,
+            device=w.embed_tokens.device,
+            dtype=w.embed_tokens.dtype,
+        )
+
+    def prefill(
+        self,
+        input_ids: Tensor,
+        cache_slots: Tensor,
+        attention_mask: Tensor | None = None,
+    ) -> Tensor:
+        position_ids = _position_ids_from_attention_mask(attention_mask)
+        if position_ids is None:
+            position_ids = torch.arange(input_ids.shape[1], device=input_ids.device).expand(input_ids.shape[0], -1)
+        return _model(
+            input_ids,
+            self.w,
+            self.cfg,
+            cache=self.cache,
+            cache_slots=cache_slots,
+            position_ids=position_ids,
+            attention_mask=attention_mask,
+        )
+
+    def decode(self, input_ids: Tensor, cache_slots: Tensor) -> Tensor:
+        position_ids = self.cache.seq_lens[cache_slots].unsqueeze(1)
+        return _model(
+            input_ids,
+            self.w,
+            self.cfg,
+            cache=self.cache,
+            cache_slots=cache_slots,
+            position_ids=position_ids,
+        )
+
+
 def generate(
     input_ids: Tensor,
     w: Weights,
@@ -401,6 +453,7 @@ def _model(
     paged_cache: object | None = None,
     position_ids: Tensor | None = None,
     attention_mask: Tensor | None = None,
+    cache_slots: Tensor | None = None,
 ) -> Tensor:
     kwargs = {}
     if cache is not None:
@@ -411,6 +464,8 @@ def _model(
         kwargs["position_ids"] = position_ids
     if attention_mask is not None:
         kwargs["attention_mask"] = attention_mask
+    if cache_slots is not None:
+        kwargs["cache_slots"] = cache_slots
     return model(input_ids, w, cfg, **kwargs)
 
 
