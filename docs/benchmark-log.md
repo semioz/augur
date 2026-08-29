@@ -72,6 +72,17 @@ RoPE cos/sin tables depend only on position IDs, head dimension, dtype, and `rop
 
 Keep the change. It removes 23 redundant RoPE table constructions per forward without changing model outputs.
 
+## Rejected: Fused SwiGLU Activation
+
+A Triton kernel fused the `SiLU(gate) * up` elementwise step, while leaving the gate, up, and down GEMVs unchanged. It matched PyTorch FP16 output on A10G but added enough launch/dispatch overhead to regress throughput.
+
+| Metric | Shared-RoPE median | Fused-SwiGLU runs | Fused-SwiGLU median | Change |
+| --- | ---: | --- | ---: | ---: |
+| total generation tokens/sec | 55.54 | 54.71, 54.11, 54.05 | 54.11 | -2.6% |
+| decode tokens/sec | 55.59 | 54.75, 54.16, 54.09 | 54.16 | -2.6% |
+
+The implementation was reverted. A useful MLP kernel must also reduce projection/intermediate-memory work, not merely fuse the elementwise activation.
+
 ## Warmed Modal Runs
 
 The Modal runner now performs one warm-up followed by three measurements in the same remote process.
@@ -122,4 +133,5 @@ Both benchmarks exclude model-weight loading. vLLM also completes engine compila
 7. **Warmed Nsight Systems trace captured** — 47.3 ms aggregate kernel-launch API time; CUDA Graph is not the next priority.
 8. **Cached single-token causal mask bypass** — +8.4% total throughput and +8.5% decode throughput.
 9. **Shared RoPE tables** — +14.7% total/decode throughput by constructing cos/sin once per forward.
-10. **Next: profile GPU kernels rather than refactor for CUDA Graph** — simple MLP packing is also not beneficial.
+10. **Fused SwiGLU activation rejected** — -2.6%; elementwise fusion alone is too small.
+11. **Next: profile GPU kernels rather than refactor for CUDA Graph** — simple MLP packing is also not beneficial.
