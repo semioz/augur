@@ -39,6 +39,17 @@ def new_kv_cache(
     )
 
 
+def cache_attention_mask(cache: KVCache, position_ids: Tensor | None = None) -> Tensor:
+    seq_lens = cache.seq_lens
+    if position_ids is not None:
+        seq_lens = torch.maximum(
+            seq_lens,
+            position_ids.to(device=seq_lens.device).max(dim=1).values + 1,
+        )
+    positions = torch.arange(int(seq_lens.max().item()), device=seq_lens.device)
+    return positions.unsqueeze(0) < seq_lens.unsqueeze(1)
+
+
 def kv_cache_nbytes(
     cfg: QwenConfig,
     batch_size: int,

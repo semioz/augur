@@ -7,7 +7,7 @@ import torch
 import pytest
 
 from augur.config import QwenConfig
-from augur.kv_cache import format_bytes, kv_cache_nbytes, new_kv_cache, write_kv
+from augur.kv_cache import cache_attention_mask, format_bytes, kv_cache_nbytes, new_kv_cache, write_kv
 
 
 def tiny_cfg() -> QwenConfig:
@@ -58,6 +58,21 @@ def test_write_kv_tracks_lengths_for_each_batch_row() -> None:
 
     assert cache.seq_lens.tolist() == [3, 1]
     assert cache.seq_len == 3
+
+
+def test_cache_attention_mask_hides_unwritten_positions() -> None:
+    cfg = tiny_cfg()
+    cache = new_kv_cache(
+        cfg,
+        batch_size=2,
+        max_seq_len=4,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+    )
+    cache.seq_lens.copy_(torch.tensor([3, 1]))
+    cache.seq_len = 3
+
+    assert cache_attention_mask(cache).tolist() == [[True, True, True], [True, False, False]]
 
 
 def test_kv_cache_nbytes_counts_keys_and_values() -> None:

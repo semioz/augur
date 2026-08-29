@@ -4,7 +4,7 @@ from torch import Tensor
 
 from augur.block import block
 from augur.config import QwenConfig
-from augur.kv_cache import KVCache
+from augur.kv_cache import KVCache, cache_attention_mask
 from augur.paged_kv_cache import PagedKVCacheState
 from augur.rms_norm import rms_norm
 from augur.rope import rope_embeddings
@@ -34,6 +34,10 @@ def model(
             past_len + seq,
             device=input_ids.device,
         ).expand(batch, -1)
+
+    if cache is not None:
+        cache_mask = cache_attention_mask(cache, position_ids)
+        attention_mask = cache_mask if attention_mask is None else attention_mask.to(torch.bool) & cache_mask
 
     x = F.embedding(input_ids, w.embed_tokens)
     rope = rope_embeddings(position_ids, cfg.head_dim, cfg.rope_theta, x.dtype)

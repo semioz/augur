@@ -216,6 +216,37 @@ def test_model_forwards_attention_mask(monkeypatch) -> None:
     assert seen_attention_mask is attention_mask
 
 
+def test_model_masks_unwritten_cache_positions(monkeypatch) -> None:
+    cfg = _tiny_config_with_layer()
+    w = _build_weights(cfg)
+    cache = new_kv_cache(
+        cfg,
+        batch_size=2,
+        max_seq_len=4,
+        device=torch.device("cpu"),
+        dtype=w.embed_tokens.dtype,
+    )
+    cache.seq_lens.copy_(torch.tensor([3, 1]))
+    cache.seq_len = 3
+    seen_attention_mask = None
+
+    def fake_block(x, w, cfg, position_ids, cache=None, layer_idx=None, attention_mask=None, rope=None):
+        nonlocal seen_attention_mask
+        seen_attention_mask = attention_mask
+        return x
+
+    monkeypatch.setattr(model_module, "block", fake_block)
+    model(
+        torch.tensor([[1], [2]]),
+        w,
+        cfg,
+        cache=cache,
+        position_ids=torch.tensor([[3], [1]]),
+    )
+
+    assert seen_attention_mask.tolist() == [[True, True, True, True], [True, True, False, False]]
+
+
 def test_model_forwards_paged_cache(monkeypatch) -> None:
     cfg = _tiny_config_with_layer()
     w = _build_weights(cfg)
