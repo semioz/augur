@@ -10,6 +10,7 @@ from augur.config import QwenConfig
 class KVCache:
     keys: Tensor
     values: Tensor
+    seq_lens: Tensor
     seq_len: int = 0
 
     @property
@@ -34,6 +35,7 @@ def new_kv_cache(
     return KVCache(
         keys=torch.empty(shape, device=device, dtype=dtype),
         values=torch.empty(shape, device=device, dtype=dtype),
+        seq_lens=torch.zeros(batch_size, device=device, dtype=torch.long),
     )
 
 
@@ -105,6 +107,10 @@ def write_kv(
         cache.keys[layer_idx, batch_idx, :, positions, :] = key[batch_idx]
         cache.values[layer_idx, batch_idx, :, positions, :] = value[batch_idx]
 
+    cache.seq_lens = torch.maximum(
+        cache.seq_lens,
+        position_ids.to(device=cache.seq_lens.device).max(dim=1).values + 1,
+    )
     cache.seq_len = max(cache.seq_len, max_position + 1)
     return (
         cache.keys[layer_idx, :, :, : cache.seq_len, :],

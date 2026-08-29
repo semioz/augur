@@ -38,6 +38,28 @@ def test_new_kv_cache_preallocates_all_layers() -> None:
     assert cache.keys.dtype == torch.float32
 
 
+def test_write_kv_tracks_lengths_for_each_batch_row() -> None:
+    cfg = tiny_cfg()
+    cache = new_kv_cache(
+        cfg,
+        batch_size=2,
+        max_seq_len=4,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+    )
+
+    write_kv(
+        cache,
+        layer_idx=0,
+        position_ids=torch.tensor([[0, 1, 2], [0, 0, 0]]),
+        key=torch.randn(2, 1, 3, 4),
+        value=torch.randn(2, 1, 3, 4),
+    )
+
+    assert cache.seq_lens.tolist() == [3, 1]
+    assert cache.seq_len == 3
+
+
 def test_kv_cache_nbytes_counts_keys_and_values() -> None:
     cfg = QwenConfig(
         vocab_size=16,
