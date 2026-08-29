@@ -90,6 +90,20 @@ def test_scheduler_batches_only_requests_with_matching_generation_params() -> No
     assert scheduler.peek_waiting().request_id == "req-2"
 
 
+def test_scheduler_admits_matching_request_while_requests_are_running() -> None:
+    scheduler = RequestScheduler()
+    scheduler.add_request(make_request("req-1"))
+    running = scheduler.pop_batch(max_batch_size=1)
+    scheduler.add_request(make_request("req-2"))
+    scheduler.add_request(make_request("req-3", temperature=0.7))
+
+    admitted = scheduler.pop_matching(max_batch_size=1, params=running[0].params)
+
+    assert [request.request_id for request in admitted] == ["req-2"]
+    assert scheduler.num_running == 2
+    assert scheduler.peek_waiting().request_id == "req-3"
+
+
 def test_generation_request_exposes_batching_params() -> None:
     request = make_request("req-1", max_new_tokens=8, temperature=0.7)
 

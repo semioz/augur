@@ -86,22 +86,26 @@ class RequestScheduler:
         return True
 
     def pop_batch(self, max_batch_size: int) -> list[GenerationRequest]:
+        if self.num_waiting == 0:
+            return []
+        return self.pop_matching(max_batch_size, self.peek_waiting().params)
+
+    def pop_matching(
+        self,
+        max_batch_size: int,
+        params: GenerationParams,
+    ) -> list[GenerationRequest]:
         if max_batch_size <= 0:
             raise ValueError("max_batch_size must be positive")
 
-        first_request = self.peek_waiting() if self.num_waiting > 0 else None
-        if first_request is None:
-            return []
-
         batch = []
         remaining = deque()
-        target_params = first_request.params
         while self._waiting:
             request_id = self._waiting.popleft()
             request = self._requests.get(request_id)
             if request is None:
                 continue
-            if len(batch) == max_batch_size or request.params != target_params:
+            if len(batch) == max_batch_size or request.params != params:
                 remaining.append(request_id)
                 continue
             self._running.add(request_id)
