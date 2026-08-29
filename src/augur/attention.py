@@ -28,6 +28,7 @@ def attention(
     paged_cache: PagedKVCacheState | None = None,
     layer_idx: int | None = None,
     attention_mask: Tensor | None = None,
+    rope: tuple[Tensor, Tensor] | None = None,
 ) -> Tensor:
     batch, seq, _ = x.shape
     if w.qkv is None:
@@ -57,7 +58,7 @@ def attention(
         head_dim=cfg.head_dim,
     )
 
-    q, k = apply_rope(q, k, position_ids, cfg.rope_theta)
+    q, k = apply_rope(q, k, position_ids, cfg.rope_theta, rope)
 
     if cache is not None and paged_cache is not None:
         raise ValueError("cache and paged_cache cannot both be provided")

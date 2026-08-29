@@ -1,6 +1,8 @@
+from dataclasses import replace
+from types import SimpleNamespace
+
 import torch
 import torch.nn.functional as F
-from types import SimpleNamespace
 from transformers import Qwen2Config as HFQwen2Config
 from transformers.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM
 
@@ -157,6 +159,23 @@ def test_model_matches_hf_qwen() -> None:
     )
 
 
+def test_model_builds_rope_tables_once_for_all_layers(monkeypatch) -> None:
+    cfg = replace(_tiny_config_with_layer(), num_hidden_layers=2)
+    w = _build_weights(cfg)
+    w = replace(w, layers=w.layers * 2)
+    calls = []
+
+    def fake_rope_embeddings(position_ids, head_dim, rope_theta, dtype):
+        calls.append((position_ids, head_dim, rope_theta, dtype))
+        shape = (*position_ids.shape, head_dim)
+        return torch.ones(shape, dtype=dtype), torch.zeros(shape, dtype=dtype)
+
+    monkeypatch.setattr(model_module, "rope_embeddings", fake_rope_embeddings, raising=False)
+    model(torch.tensor([[1, 2, 3]]), w, cfg)
+
+    assert len(calls) == 1
+
+
 def test_model_with_cache_matches_full_model_last_token() -> None:
     cfg = _tiny_config_with_layer()
     torch.manual_seed(0)
@@ -185,7 +204,7 @@ def test_model_forwards_attention_mask(monkeypatch) -> None:
     attention_mask = torch.tensor([[1, 1, 1], [1, 1, 0]])
     seen_attention_mask = None
 
-    def fake_block(x, w, cfg, position_ids, cache=None, layer_idx=None, attention_mask=None):
+    def fake_block(x, w, cfg, position_ids, cache=None, layer_idx=None, attention_mask=None, rope=None):
         nonlocal seen_attention_mask
         seen_attention_mask = attention_mask
         return x
@@ -213,6 +232,7 @@ def test_model_forwards_paged_cache(monkeypatch) -> None:
         paged_cache=None,
         layer_idx=None,
         attention_mask=None,
+        rope=None,
     ):
         nonlocal seen_paged_cache
         seen_paged_cache = paged_cache

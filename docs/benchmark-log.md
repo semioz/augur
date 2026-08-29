@@ -61,6 +61,17 @@ Cached decode forwards contain one query token and only past/current KV entries,
 
 Keep the change. It removes an unnecessary per-layer decode operation without changing attention semantics.
 
+## Shared RoPE Tables
+
+RoPE cos/sin tables depend only on position IDs, head dimension, dtype, and `rope_theta`; the prior path rebuilt them in every attention layer. The model now builds them once per forward and passes the same tensors through all layers.
+
+| Metric | Prior warmed median | Shared-RoPE runs | Shared-RoPE median | Change |
+| --- | ---: | --- | ---: | ---: |
+| total generation tokens/sec | 48.44 | 55.54, 55.42, 55.75 | 55.54 | +14.7% |
+| decode tokens/sec | 48.48 | 55.59, 55.46, 55.80 | 55.59 | +14.7% |
+
+Keep the change. It removes 23 redundant RoPE table constructions per forward without changing model outputs.
+
 ## Warmed Modal Runs
 
 The Modal runner now performs one warm-up followed by three measurements in the same remote process.
@@ -110,4 +121,5 @@ Both benchmarks exclude model-weight loading. vLLM also completes engine compila
 6. **`torch.compile` rejected** — graph breaks/recompilation caused a 23.1% throughput regression; reverted.
 7. **Warmed Nsight Systems trace captured** — 47.3 ms aggregate kernel-launch API time; CUDA Graph is not the next priority.
 8. **Cached single-token causal mask bypass** — +8.4% total throughput and +8.5% decode throughput.
-9. **Next: profile GPU kernels rather than refactor for CUDA Graph** — simple MLP packing is also not beneficial.
+9. **Shared RoPE tables** — +14.7% total/decode throughput by constructing cos/sin once per forward.
+10. **Next: profile GPU kernels rather than refactor for CUDA Graph** — simple MLP packing is also not beneficial.

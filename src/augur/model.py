@@ -7,6 +7,7 @@ from augur.config import QwenConfig
 from augur.kv_cache import KVCache
 from augur.paged_kv_cache import PagedKVCacheState
 from augur.rms_norm import rms_norm
+from augur.rope import rope_embeddings
 from augur.weights import Weights
 
 
@@ -35,6 +36,7 @@ def model(
         ).expand(batch, -1)
 
     x = F.embedding(input_ids, w.embed_tokens)
+    rope = rope_embeddings(position_ids, cfg.head_dim, cfg.rope_theta, x.dtype)
 
     for layer_idx, layer in enumerate(w.layers):
         kwargs = {}
@@ -48,6 +50,7 @@ def model(
             cache=cache,
             layer_idx=layer_idx,
             attention_mask=attention_mask,
+            rope=rope,
             **kwargs,
         )
 

@@ -155,7 +155,7 @@ def test_block_forwards_attention_mask(monkeypatch) -> None:
     attention_mask = torch.tensor([[1, 1, 1], [1, 1, 0]])
     seen_attention_mask = None
 
-    def fake_attention(x, w, cfg, position_ids, cache=None, paged_cache=None, layer_idx=None, attention_mask=None):
+    def fake_attention(x, w, cfg, position_ids, cache=None, paged_cache=None, layer_idx=None, attention_mask=None, rope=None):
         nonlocal seen_attention_mask
         seen_attention_mask = attention_mask
         return torch.zeros_like(x)
@@ -198,6 +198,7 @@ def test_block_forwards_paged_cache(monkeypatch) -> None:
         paged_cache=None,
         layer_idx=None,
         attention_mask=None,
+        rope=None,
     ):
         nonlocal seen_paged_cache
         seen_paged_cache = paged_cache

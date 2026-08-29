@@ -80,10 +80,10 @@ The current benchmark workload is Modal A10G, Qwen2.5-0.5B FP16, batch 1, a 7-to
 
 | Engine | Warmed total throughput |
 | --- | ---: |
-| Augur | 48.35 tok/s |
+| Augur | 55.54 tok/s |
 | vLLM | 300.38 tok/s |
 
-Packed QKV projections and bypassing the redundant causal mask during single-token decode improved Augur throughput by 4% and 8.4%, respectively. vLLM remains substantially faster because it has a production scheduler and optimized execution path; this comparison is directional, not an apples-to-apples serving benchmark.
+Packed QKV projections, bypassing the redundant causal mask during single-token decode, and sharing RoPE tables across layers improved Augur throughput by 4%, 8.4%, and 14.7%, respectively. vLLM remains substantially faster because it has a production scheduler and optimized execution path; this comparison is directional, not an apples-to-apples serving benchmark.
 
 Run Augur on the same workload:
 
