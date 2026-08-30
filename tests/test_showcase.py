@@ -1,4 +1,7 @@
+from types import SimpleNamespace
+
 import pytest
+import torch
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
@@ -20,18 +23,34 @@ def test_public_generation_request_limits_output_tokens() -> None:
 
 
 class FakeEngine:
+    cfg = SimpleNamespace(max_position_embeddings=16)
+    device = torch.device("cpu")
+    weights = object()
+    tokenizer = SimpleNamespace(eos_token_id=2, decode=lambda token_ids: "Hello" if len(token_ids) == 1 else "Hello world")
+
     def generate_batch(self, _requests):
         return []
 
-    def generate_stream(self, **kwargs):
-        for text in ("Hello", " world"):
-            kwargs["on_token"]()
-            yield text
+
+class FakeContinuousEngine:
+    def __init__(self, *_args, **_kwargs):
+        pass
+
+    def prefill(self, states):
+        return [1] * len(states)
+
+    def decode(self, states):
+        return [2] * len(states)
+
+    def release(self, _states):
+        pass
 
 
-def test_stream_reports_measured_token_rate() -> None:
+def test_stream_reports_measured_token_rate(monkeypatch) -> None:
+    import augur.server as server
     from augur.showcase import create_showcase_app
 
+    monkeypatch.setattr(server, "ContinuousEngine", FakeContinuousEngine)
     with TestClient(create_showcase_app(FakeEngine())) as client:
         response = client.post("/generate_stream", json={"prompt": "hello"})
 

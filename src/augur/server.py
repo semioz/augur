@@ -1,6 +1,6 @@
 import json
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Protocol
@@ -15,7 +15,7 @@ from augur.config import QwenConfig
 from augur.generation import FixedSlotDecoder, generate
 from augur.generation import generate_stream as generate_token_stream
 from augur.sampling import sample_next_token
-from augur.scheduler import ActiveRequest, AsyncBatchScheduler, GenerationRequest
+from augur.scheduler import ActiveRequest, AsyncBatchScheduler, AsyncContinuousScheduler, GenerationRequest
 from augur.text import apply_stop_strings
 from augur.tokenizer import Tokenizer
 from augur.weights import Weights, load_weights
@@ -238,14 +238,25 @@ class ContinuousEngine:
         return sample_next_token(logits, params.temperature, params.top_k, params.top_p).flatten().tolist()
 
 
-def create_app(engine: TextGenerator) -> FastAPI:
-    scheduler: AsyncBatchScheduler[GenerateResponse] = AsyncBatchScheduler(engine)
+def create_app(engine: AugurEngine) -> FastAPI:
+    batch_scheduler: AsyncBatchScheduler[GenerateResponse] = AsyncBatchScheduler(engine)
+    continuous_scheduler = AsyncContinuousScheduler(
+        ContinuousEngine(
+            engine,
+            max_slots=8,
+            max_seq_len=min(2048, engine.cfg.max_position_embeddings),
+        ),
+        max_slots=8,
+        eos_token_id=engine.tokenizer.eos_token_id,
+    )
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        scheduler.start()
+        batch_scheduler.start()
+        continuous_scheduler.start()
         yield
-        await scheduler.shutdown()
+        await batch_scheduler.shutdown()
+        await continuous_scheduler.shutdown()
 
     app = FastAPI(title="augur", lifespan=lifespan)
 
@@ -255,7 +266,7 @@ def create_app(engine: TextGenerator) -> FastAPI:
 
     @app.post("/generate")
     async def generate_endpoint(request: GenerateRequest) -> GenerateResponse:
-        return await scheduler.generate(
+        return await batch_scheduler.generate(
             GenerationRequest(
                 request_id=uuid4().hex,
                 prompt=request.prompt,
@@ -268,30 +279,37 @@ def create_app(engine: TextGenerator) -> FastAPI:
         )
 
     @app.post("/generate_stream")
-    def generate_stream_endpoint(request: GenerateRequest) -> StreamingResponse:
-        def events() -> Iterator[str]:
+    async def generate_stream_endpoint(request: GenerateRequest) -> StreamingResponse:
+        async def events() -> AsyncIterator[str]:
             started_at = time.perf_counter()
-            generated_tokens = 0
-
-            def count_token() -> None:
-                nonlocal generated_tokens
-                generated_tokens += 1
-
-            for text in engine.generate_stream(
+            token_ids: list[int] = []
+            emitted_text = ""
+            generation_request = GenerationRequest(
+                request_id=uuid4().hex,
                 prompt=request.prompt,
                 max_new_tokens=request.max_new_tokens,
                 temperature=request.temperature,
                 top_k=request.top_k,
                 top_p=request.top_p,
                 stop=request.stop,
-                on_token=count_token,
-            ):
-                yield sse_event({"text": text})
+            )
+            async for token_id in continuous_scheduler.stream(generation_request):
+                token_ids.append(token_id)
+                text = engine.tokenizer.decode(token_ids).lstrip()
+                stop_positions = [idx for stop_text in request.stop if (idx := text.find(stop_text)) != -1]
+                if stop_positions:
+                    text = text[: min(stop_positions)]
+                delta = text[len(emitted_text) :]
+                emitted_text = text
+                if delta:
+                    yield sse_event({"text": delta})
+                if stop_positions:
+                    break
             elapsed = max(time.perf_counter() - started_at, 1e-6)
             yield sse_event(
                 {
-                    "generated_tokens": generated_tokens,
-                    "tokens_per_second": generated_tokens / elapsed,
+                    "generated_tokens": len(token_ids),
+                    "tokens_per_second": len(token_ids) / elapsed,
                 }
             )
             yield "data: [DONE]\n\n"
