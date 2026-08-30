@@ -198,6 +198,12 @@ def test_attention_with_cache_matches_full_attention_last_token() -> None:
     torch.testing.assert_close(cached_last, full[:, 4:, :], rtol=1e-5, atol=1e-5)
 
 
+def test_causal_mask_uses_each_querys_absolute_position() -> None:
+    mask = attention_module._causal_mask_for_positions(torch.tensor([[0, 1]]), key_len=4)
+
+    assert mask.tolist() == [[[False, True, True, True], [False, False, True, True]]]
+
+
 def test_cached_single_token_attention_skips_causal_mask(monkeypatch) -> None:
     cfg = _tiny_config()
     w = Attention(

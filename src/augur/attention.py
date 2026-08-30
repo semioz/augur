@@ -19,6 +19,11 @@ def _causal_mask(query_len: int, key_len: int, device: torch.device) -> Tensor:
     return key_positions > query_positions
 
 
+def _causal_mask_for_positions(position_ids: Tensor, key_len: int) -> Tensor:
+    key_positions = torch.arange(key_len, device=position_ids.device)
+    return key_positions.unsqueeze(0).unsqueeze(0) > position_ids.unsqueeze(-1)
+
+
 def attention(
     x: Tensor,
     w: Attention,
@@ -88,7 +93,10 @@ def attention(
     # leaving the upper triangular part of matrix for causal mask, putting -inf for zeroed ones to do softmax later
     try:
         if seq > 1:
-            mask = _causal_mask(seq, k.shape[2], x.device)
+            if cache is None:
+                mask = _causal_mask(seq, k.shape[2], x.device)
+            else:
+                mask = _causal_mask_for_positions(position_ids, k.shape[2]).unsqueeze(1)
             scores = scores.masked_fill(mask, float("-inf"))
         if attention_mask is not None:
             if attention_mask.shape != (batch, k.shape[2]):
