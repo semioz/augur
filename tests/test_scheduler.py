@@ -1,6 +1,7 @@
 import asyncio
 
 from augur.scheduler import (
+    ActiveRequest,
     AsyncBatchScheduler,
     GenerationParams,
     GenerationRequest,
@@ -32,6 +33,18 @@ def make_request(
         top_p=None,
         stop=[],
     )
+
+
+def test_active_request_starts_with_an_empty_token_state() -> None:
+    state = ActiveRequest(
+        request=make_request("req-1"),
+        slot=3,
+        token_queue=asyncio.Queue(),
+    )
+
+    assert state.slot == 3
+    assert state.generated_token_ids == []
+    assert state.pending_token is None
 
 
 def test_scheduler_tracks_waiting_requests_by_id() -> None:

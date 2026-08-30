@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Generic, Protocol, TypeVar
 
 
@@ -40,6 +40,15 @@ class GenerationRequest:
             top_k=self.top_k,
             top_p=self.top_p,
         )
+
+
+@dataclass
+class ActiveRequest:
+    request: GenerationRequest
+    slot: int
+    token_queue: asyncio.Queue[int | None]
+    generated_token_ids: list[int] = field(default_factory=list)
+    pending_token: int | None = None
 
 
 class RequestScheduler:
