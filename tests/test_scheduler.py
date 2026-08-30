@@ -1,7 +1,9 @@
 import asyncio
 
 from augur.scheduler import (
+    ActiveRequest,
     AsyncBatchScheduler,
+    AsyncContinuousScheduler,
     GenerationParams,
     GenerationRequest,
     RequestScheduler,
@@ -32,6 +34,18 @@ def make_request(
         top_p=None,
         stop=[],
     )
+
+
+def test_active_request_starts_with_an_empty_token_state() -> None:
+    state = ActiveRequest(
+        request=make_request("req-1"),
+        slot=3,
+        token_queue=asyncio.Queue(),
+    )
+
+    assert state.slot == 3
+    assert state.generated_token_ids == []
+    assert state.pending_token is None
 
 
 def test_scheduler_tracks_waiting_requests_by_id() -> None:
@@ -90,6 +104,20 @@ def test_scheduler_batches_only_requests_with_matching_generation_params() -> No
     assert scheduler.peek_waiting().request_id == "req-2"
 
 
+def test_scheduler_admits_matching_request_while_requests_are_running() -> None:
+    scheduler = RequestScheduler()
+    scheduler.add_request(make_request("req-1"))
+    running = scheduler.pop_batch(max_batch_size=1)
+    scheduler.add_request(make_request("req-2"))
+    scheduler.add_request(make_request("req-3", temperature=0.7))
+
+    admitted = scheduler.pop_matching(max_batch_size=1, params=running[0].params)
+
+    assert [request.request_id for request in admitted] == ["req-2"]
+    assert scheduler.num_running == 2
+    assert scheduler.peek_waiting().request_id == "req-3"
+
+
 def test_generation_request_exposes_batching_params() -> None:
     request = make_request("req-1", max_new_tokens=8, temperature=0.7)
 
@@ -117,6 +145,42 @@ def test_scheduler_returns_false_when_finishing_unknown_request() -> None:
     scheduler = RequestScheduler()
 
     assert scheduler.finish_request("missing") is False
+
+
+def test_async_continuous_scheduler_reuses_finished_slots() -> None:
+    class FakeGenerator:
+        def __init__(self) -> None:
+            self.prefills: list[list[int]] = []
+            self.released: list[list[int]] = []
+
+        def prefill(self, states):
+            self.prefills.append([state.slot for state in states])
+            return [1] * len(states)
+
+        def decode(self, states):
+            return [2] * len(states)
+
+        def release(self, states):
+            self.released.append([state.slot for state in states])
+
+    async def collect(scheduler, request):
+        return [token async for token in scheduler.stream(request)]
+
+    async def run() -> None:
+        generator = FakeGenerator()
+        scheduler = AsyncContinuousScheduler(generator, max_slots=1)
+        try:
+            first = await collect(scheduler, make_request("first", max_new_tokens=1))
+            second = await collect(scheduler, make_request("second", max_new_tokens=1))
+        finally:
+            await scheduler.shutdown()
+
+        assert first == [1]
+        assert second == [1]
+        assert generator.prefills == [[0], [0]]
+        assert generator.released == [[0], [0]]
+
+    asyncio.run(run())
 
 
 def test_async_batch_scheduler_batches_compatible_requests() -> None:

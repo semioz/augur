@@ -7,7 +7,7 @@ import torch
 import pytest
 
 from augur.config import QwenConfig
-from augur.kv_cache import format_bytes, kv_cache_nbytes, new_kv_cache, write_kv
+from augur.kv_cache import cache_attention_mask, format_bytes, kv_cache_nbytes, new_kv_cache, write_kv
 
 
 def tiny_cfg() -> QwenConfig:
@@ -36,6 +36,69 @@ def test_new_kv_cache_preallocates_all_layers() -> None:
     assert cache.values.shape == (2, 3, 1, 5, 4)
     assert cache.seq_len == 0
     assert cache.keys.dtype == torch.float32
+
+
+def test_write_kv_tracks_lengths_for_each_batch_row() -> None:
+    cfg = tiny_cfg()
+    cache = new_kv_cache(
+        cfg,
+        batch_size=2,
+        max_seq_len=4,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+    )
+
+    write_kv(
+        cache,
+        layer_idx=0,
+        position_ids=torch.tensor([[0, 1, 2], [0, 0, 0]]),
+        key=torch.randn(2, 1, 3, 4),
+        value=torch.randn(2, 1, 3, 4),
+    )
+
+    assert cache.seq_lens.tolist() == [3, 1]
+    assert cache.seq_len == 3
+
+
+def test_write_kv_writes_to_selected_cache_slots() -> None:
+    cfg = tiny_cfg()
+    cache = new_kv_cache(
+        cfg,
+        batch_size=3,
+        max_seq_len=4,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+    )
+    key = torch.randn(1, 1, 1, 4)
+    value = torch.randn_like(key)
+
+    cached_key, _ = write_kv(
+        cache,
+        layer_idx=0,
+        position_ids=torch.tensor([[0]]),
+        key=key,
+        value=value,
+        cache_slots=torch.tensor([2]),
+    )
+
+    assert cache.seq_lens.tolist() == [0, 0, 1]
+    assert cached_key.shape == (1, 1, 1, 4)
+    torch.testing.assert_close(cached_key, key)
+
+
+def test_cache_attention_mask_hides_unwritten_positions() -> None:
+    cfg = tiny_cfg()
+    cache = new_kv_cache(
+        cfg,
+        batch_size=2,
+        max_seq_len=4,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+    )
+    cache.seq_lens.copy_(torch.tensor([3, 1]))
+    cache.seq_len = 3
+
+    assert cache_attention_mask(cache).tolist() == [[True, True, True], [True, False, False]]
 
 
 def test_kv_cache_nbytes_counts_keys_and_values() -> None:

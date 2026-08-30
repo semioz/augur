@@ -204,7 +204,7 @@ def test_model_forwards_attention_mask(monkeypatch) -> None:
     attention_mask = torch.tensor([[1, 1, 1], [1, 1, 0]])
     seen_attention_mask = None
 
-    def fake_block(x, w, cfg, position_ids, cache=None, layer_idx=None, attention_mask=None, rope=None):
+    def fake_block(x, w, cfg, position_ids, cache=None, layer_idx=None, attention_mask=None, rope=None, cache_slots=None):
         nonlocal seen_attention_mask
         seen_attention_mask = attention_mask
         return x
@@ -214,6 +214,125 @@ def test_model_forwards_attention_mask(monkeypatch) -> None:
     model(input_ids, w, cfg, attention_mask=attention_mask)
 
     assert seen_attention_mask is attention_mask
+
+
+def test_model_masks_unwritten_cache_positions(monkeypatch) -> None:
+    cfg = _tiny_config_with_layer()
+    w = _build_weights(cfg)
+    cache = new_kv_cache(
+        cfg,
+        batch_size=2,
+        max_seq_len=4,
+        device=torch.device("cpu"),
+        dtype=w.embed_tokens.dtype,
+    )
+    cache.seq_lens.copy_(torch.tensor([3, 1]))
+    cache.seq_len = 3
+    seen_attention_mask = None
+
+    def fake_block(x, w, cfg, position_ids, cache=None, layer_idx=None, attention_mask=None, rope=None, cache_slots=None):
+        nonlocal seen_attention_mask
+        seen_attention_mask = attention_mask
+        return x
+
+    monkeypatch.setattr(model_module, "block", fake_block)
+    model(
+        torch.tensor([[1], [2]]),
+        w,
+        cfg,
+        cache=cache,
+        position_ids=torch.tensor([[3], [1]]),
+    )
+
+    assert seen_attention_mask.tolist() == [[True, True, True, True], [True, True, False, False]]
+
+
+def test_model_forwards_cache_slots(monkeypatch) -> None:
+    cfg = _tiny_config_with_layer()
+    w = _build_weights(cfg)
+    cache = new_kv_cache(
+        cfg,
+        batch_size=2,
+        max_seq_len=4,
+        device=torch.device("cpu"),
+        dtype=w.embed_tokens.dtype,
+    )
+    seen_cache_slots = None
+
+    def fake_block(
+        x,
+        w,
+        cfg,
+        position_ids,
+        cache=None,
+        layer_idx=None,
+        attention_mask=None,
+        rope=None,
+        cache_slots=None,
+    ):
+        nonlocal seen_cache_slots
+        seen_cache_slots = cache_slots
+        return x
+
+    monkeypatch.setattr(model_module, "block", fake_block)
+    model(
+        torch.tensor([[1]]),
+        w,
+        cfg,
+        cache=cache,
+        cache_slots=torch.tensor([1]),
+        position_ids=torch.tensor([[0]]),
+    )
+
+    assert seen_cache_slots.tolist() == [1]
+
+
+def test_model_writes_only_selected_cache_slot() -> None:
+    cfg = _tiny_config_with_layer()
+    w = _build_weights(cfg)
+    cache = new_kv_cache(
+        cfg,
+        batch_size=2,
+        max_seq_len=4,
+        device=torch.device("cpu"),
+        dtype=w.embed_tokens.dtype,
+    )
+
+    logits = model(
+        torch.tensor([[1, 2]]),
+        w,
+        cfg,
+        cache=cache,
+        cache_slots=torch.tensor([1]),
+    )
+
+    assert logits.shape == (1, 2, cfg.vocab_size)
+    assert cache.seq_lens.tolist() == [0, 2]
+
+
+def test_model_masks_shorter_slot_against_longer_cached_slot() -> None:
+    cfg = _tiny_config_with_layer()
+    w = _build_weights(cfg)
+    cache = new_kv_cache(
+        cfg,
+        batch_size=2,
+        max_seq_len=4,
+        device=torch.device("cpu"),
+        dtype=w.embed_tokens.dtype,
+    )
+
+    model(torch.tensor([[1, 2, 3]]), w, cfg, cache=cache, cache_slots=torch.tensor([0]))
+    logits = model(
+        torch.tensor([[4, 5]]),
+        w,
+        cfg,
+        cache=cache,
+        cache_slots=torch.tensor([1]),
+        attention_mask=torch.tensor([[1, 1]]),
+    )
+
+    assert logits.shape == (1, 2, cfg.vocab_size)
+    assert cache.seq_lens.tolist() == [3, 2]
 
 
 def test_model_forwards_paged_cache(monkeypatch) -> None:
@@ -233,6 +352,7 @@ def test_model_forwards_paged_cache(monkeypatch) -> None:
         layer_idx=None,
         attention_mask=None,
         rope=None,
+        cache_slots=None,
     ):
         nonlocal seen_paged_cache
         seen_paged_cache = paged_cache

@@ -14,6 +14,35 @@ from augur.config import QwenConfig
 from augur.prefix_cache import PrefixCache, PrefixCacheEntry
 
 
+def test_fixed_slot_decoder_prefills_and_decodes_selected_slots(monkeypatch) -> None:
+    cfg = QwenConfig(
+        vocab_size=8,
+        hidden_size=4,
+        intermediate_size=8,
+        num_hidden_layers=0,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+    )
+    calls = []
+
+    def fake_model(input_ids, w, cfg, **kwargs):
+        calls.append(kwargs)
+        return torch.zeros(input_ids.shape[0], input_ids.shape[1], cfg.vocab_size)
+
+    monkeypatch.setattr(generation, "model", fake_model)
+    weights = SimpleNamespace(embed_tokens=torch.empty(8, 4))
+    decoder = generation.FixedSlotDecoder(weights, cfg, max_slots=2, max_seq_len=8)
+    slots = torch.tensor([1])
+
+    decoder.prefill(torch.tensor([[1, 2]]), slots)
+    decoder.cache.seq_lens[1] = 2
+    decoder.decode(torch.tensor([[3]]), slots)
+
+    assert calls[0]["cache_slots"].tolist() == [1]
+    assert calls[0]["position_ids"].tolist() == [[0, 1]]
+    assert calls[1]["position_ids"].tolist() == [[2]]
+
+
 def test_generate_appends_greedy_tokens(monkeypatch) -> None:
     cfg = QwenConfig(
         vocab_size=8,

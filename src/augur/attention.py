@@ -29,6 +29,7 @@ def attention(
     layer_idx: int | None = None,
     attention_mask: Tensor | None = None,
     rope: tuple[Tensor, Tensor] | None = None,
+    cache_slots: Tensor | None = None,
 ) -> Tensor:
     batch, seq, _ = x.shape
     if w.qkv is None:
@@ -65,7 +66,7 @@ def attention(
     if cache is not None:
         if layer_idx is None:
             raise ValueError("layer_idx is required when cache is provided")
-        k, v = write_kv(cache, layer_idx, position_ids, k, v)
+        k, v = write_kv(cache, layer_idx, position_ids, k, v, cache_slots)
     if paged_cache is not None:
         if layer_idx is None:
             raise ValueError("layer_idx is required when paged_cache is provided")

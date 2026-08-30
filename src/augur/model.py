@@ -4,7 +4,7 @@ from torch import Tensor
 
 from augur.block import block
 from augur.config import QwenConfig
-from augur.kv_cache import KVCache
+from augur.kv_cache import KVCache, cache_attention_mask
 from augur.paged_kv_cache import PagedKVCacheState
 from augur.rms_norm import rms_norm
 from augur.rope import rope_embeddings
@@ -19,21 +19,39 @@ def model(
     paged_cache: PagedKVCacheState | None = None,
     position_ids: Tensor | None = None,
     attention_mask: Tensor | None = None,
+    cache_slots: Tensor | None = None,
 ) -> Tensor:
     if cache is not None and paged_cache is not None:
         raise ValueError("cache and paged_cache cannot both be provided")
     batch, seq = input_ids.shape
     if position_ids is None:
         past_len = 0
+        if cache is not None and cache_slots is not None:
+            position_ids = cache.seq_lens[cache_slots].unsqueeze(1) + torch.arange(
+                seq,
+                device=input_ids.device,
+            )
         if cache is not None:
             past_len = cache.seq_len
         if paged_cache is not None:
             past_len = paged_cache.block_table.seq_len
-        position_ids = torch.arange(
-            past_len,
-            past_len + seq,
-            device=input_ids.device,
-        ).expand(batch, -1)
+        if position_ids is None:
+            position_ids = torch.arange(
+                past_len,
+                past_len + seq,
+                device=input_ids.device,
+            ).expand(batch, -1)
+
+    if cache is not None:
+        cache_mask = cache_attention_mask(cache, position_ids, cache_slots)
+        if attention_mask is None:
+            attention_mask = cache_mask
+        else:
+            attention_mask = attention_mask.to(torch.bool)
+            if attention_mask.shape[1] > cache_mask.shape[1]:
+                raise ValueError("attention_mask exceeds cached sequence length")
+            attention_mask = F.pad(attention_mask, (0, cache_mask.shape[1] - attention_mask.shape[1]))
+            attention_mask &= cache_mask
 
     x = F.embedding(input_ids, w.embed_tokens)
     rope = rope_embeddings(position_ids, cfg.head_dim, cfg.rope_theta, x.dtype)
@@ -51,6 +69,7 @@ def model(
             layer_idx=layer_idx,
             attention_mask=attention_mask,
             rope=rope,
+            cache_slots=cache_slots,
             **kwargs,
         )
 
