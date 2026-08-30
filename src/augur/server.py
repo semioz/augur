@@ -12,9 +12,10 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from augur.config import QwenConfig
-from augur.generation import generate
+from augur.generation import FixedSlotDecoder, generate
 from augur.generation import generate_stream as generate_token_stream
-from augur.scheduler import AsyncBatchScheduler, GenerationRequest
+from augur.sampling import sample_next_token
+from augur.scheduler import ActiveRequest, AsyncBatchScheduler, GenerationRequest
 from augur.text import apply_stop_strings
 from augur.tokenizer import Tokenizer
 from augur.weights import Weights, load_weights
@@ -187,6 +188,54 @@ class AugurEngine:
             torch.tensor(attention_mask, device=self.device),
             prompt_lengths,
         )
+
+
+class ContinuousEngine:
+    def __init__(self, engine: AugurEngine, *, max_slots: int, max_seq_len: int) -> None:
+        self._engine = engine
+        self._decoder = FixedSlotDecoder(
+            engine.weights,
+            engine.cfg,
+            max_slots=max_slots,
+            max_seq_len=max_seq_len,
+        )
+
+    def prefill(self, states: list[ActiveRequest]) -> list[int]:
+        input_ids, attention_mask, _ = self._engine._encode_prompts(
+            [state.request.prompt for state in states]
+        )
+        slots = torch.tensor([state.slot for state in states], device=self._engine.device)
+        logits = self._decoder.prefill(input_ids, slots, attention_mask)
+        return self._sample(logits, attention_mask, states)
+
+    def decode(self, states: list[ActiveRequest]) -> list[int]:
+        slots = torch.tensor([state.slot for state in states], device=self._engine.device)
+        input_ids = torch.tensor(
+            [[state.pending_token] for state in states],
+            device=self._engine.device,
+        )
+        logits = self._decoder.decode(input_ids, slots)
+        return self._sample(logits, None, states)
+
+    def release(self, states: list[ActiveRequest]) -> None:
+        slots = torch.tensor([state.slot for state in states], device=self._engine.device)
+        self._decoder.cache.seq_lens[slots] = 0
+
+    def _sample(
+        self,
+        logits: torch.Tensor,
+        attention_mask: torch.Tensor | None,
+        states: list[ActiveRequest],
+    ) -> list[int]:
+        params = states[0].request.params
+        if any(state.request.params != params for state in states):
+            raise ValueError("continuous batches require matching generation params")
+        if attention_mask is not None:
+            positions = attention_mask.to(torch.long).sum(dim=1) - 1
+            logits = logits[torch.arange(logits.shape[0], device=logits.device), positions]
+        else:
+            logits = logits[:, -1]
+        return sample_next_token(logits, params.temperature, params.top_k, params.top_p).flatten().tolist()
 
 
 def create_app(engine: TextGenerator) -> FastAPI:
