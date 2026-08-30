@@ -322,7 +322,14 @@ def test_model_masks_shorter_slot_against_longer_cached_slot() -> None:
     )
 
     model(torch.tensor([[1, 2, 3]]), w, cfg, cache=cache, cache_slots=torch.tensor([0]))
-    logits = model(torch.tensor([[4, 5]]), w, cfg, cache=cache, cache_slots=torch.tensor([1]))
+    logits = model(
+        torch.tensor([[4, 5]]),
+        w,
+        cfg,
+        cache=cache,
+        cache_slots=torch.tensor([1]),
+        attention_mask=torch.tensor([[1, 1]]),
+    )
 
     assert logits.shape == (1, 2, cfg.vocab_size)
     assert cache.seq_lens.tolist() == [3, 2]

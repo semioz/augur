@@ -44,7 +44,14 @@ def model(
 
     if cache is not None:
         cache_mask = cache_attention_mask(cache, position_ids, cache_slots)
-        attention_mask = cache_mask if attention_mask is None else attention_mask.to(torch.bool) & cache_mask
+        if attention_mask is None:
+            attention_mask = cache_mask
+        else:
+            attention_mask = attention_mask.to(torch.bool)
+            if attention_mask.shape[1] > cache_mask.shape[1]:
+                raise ValueError("attention_mask exceeds cached sequence length")
+            attention_mask = F.pad(attention_mask, (0, cache_mask.shape[1] - attention_mask.shape[1]))
+            attention_mask &= cache_mask
 
     x = F.embedding(input_ids, w.embed_tokens)
     rope = rope_embeddings(position_ids, cfg.head_dim, cfg.rope_theta, x.dtype)
