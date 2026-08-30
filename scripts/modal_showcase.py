@@ -34,7 +34,7 @@ image = (
     max_containers=1,
     volumes={"/models": models},
 )
-@modal.concurrent(max_inputs=1)
+@modal.concurrent(max_inputs=8)
 class AugurShowcase:
     @modal.enter()
     def load(self) -> None:
