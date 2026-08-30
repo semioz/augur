@@ -219,7 +219,9 @@ class ContinuousEngine:
 
     def release(self, states: list[ActiveRequest]) -> None:
         slots = torch.tensor([state.slot for state in states], device=self._engine.device)
-        self._decoder.cache.seq_lens[slots] = 0
+        cache = self._decoder.cache
+        cache.seq_lens[slots] = 0
+        cache.seq_len = int(cache.seq_lens.max().item())
 
     def _sample(
         self,

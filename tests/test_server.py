@@ -42,10 +42,11 @@ def test_continuous_engine_rejects_mixed_sampling_params() -> None:
 
 def test_continuous_engine_releases_cache_slots() -> None:
     engine = ContinuousEngine.__new__(ContinuousEngine)
-    cache = SimpleNamespace(seq_lens=torch.tensor([4, 7]))
+    cache = SimpleNamespace(seq_lens=torch.tensor([4, 7]), seq_len=7)
     engine._engine = SimpleNamespace(device=torch.device("cpu"))
     engine._decoder = SimpleNamespace(cache=cache)
 
     engine.release([make_state("one", slot=1)])
 
     assert cache.seq_lens.tolist() == [4, 0]
+    assert cache.seq_len == 4
