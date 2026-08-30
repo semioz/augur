@@ -3,6 +3,7 @@ import asyncio
 from augur.scheduler import (
     ActiveRequest,
     AsyncBatchScheduler,
+    AsyncContinuousScheduler,
     GenerationParams,
     GenerationRequest,
     RequestScheduler,
@@ -144,6 +145,42 @@ def test_scheduler_returns_false_when_finishing_unknown_request() -> None:
     scheduler = RequestScheduler()
 
     assert scheduler.finish_request("missing") is False
+
+
+def test_async_continuous_scheduler_reuses_finished_slots() -> None:
+    class FakeGenerator:
+        def __init__(self) -> None:
+            self.prefills: list[list[int]] = []
+            self.released: list[list[int]] = []
+
+        def prefill(self, states):
+            self.prefills.append([state.slot for state in states])
+            return [1] * len(states)
+
+        def decode(self, states):
+            return [2] * len(states)
+
+        def release(self, states):
+            self.released.append([state.slot for state in states])
+
+    async def collect(scheduler, request):
+        return [token async for token in scheduler.stream(request)]
+
+    async def run() -> None:
+        generator = FakeGenerator()
+        scheduler = AsyncContinuousScheduler(generator, max_slots=1)
+        try:
+            first = await collect(scheduler, make_request("first", max_new_tokens=1))
+            second = await collect(scheduler, make_request("second", max_new_tokens=1))
+        finally:
+            await scheduler.shutdown()
+
+        assert first == [1]
+        assert second == [1]
+        assert generator.prefills == [[0], [0]]
+        assert generator.released == [[0], [0]]
+
+    asyncio.run(run())
 
 
 def test_async_batch_scheduler_batches_compatible_requests() -> None:

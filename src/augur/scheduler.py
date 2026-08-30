@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from collections import deque
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Generic, Protocol, TypeVar
 
@@ -12,6 +13,14 @@ _T = TypeVar("_T")
 
 class BatchGenerator(Protocol[_T]):
     def generate_batch(self, requests: list["GenerationRequest"]) -> list[_T]: ...
+
+
+class ContinuousGenerator(Protocol):
+    def prefill(self, states: list["ActiveRequest"]) -> list[int]: ...
+
+    def decode(self, states: list["ActiveRequest"]) -> list[int]: ...
+
+    def release(self, states: list["ActiveRequest"]) -> None: ...
 
 
 @dataclass
@@ -121,6 +130,128 @@ class RequestScheduler:
             batch.append(request)
         self._waiting = remaining
         return batch
+
+
+class AsyncContinuousScheduler:
+    def __init__(
+        self,
+        generator: ContinuousGenerator,
+        *,
+        max_slots: int = 8,
+        eos_token_id: int | None = None,
+    ) -> None:
+        if max_slots <= 0:
+            raise ValueError("max_slots must be positive")
+        self._generator = generator
+        self._max_slots = max_slots
+        self._eos_token_id = eos_token_id
+        self._scheduler = RequestScheduler()
+        self._active: dict[str, ActiveRequest] = {}
+        self._queues: dict[str, asyncio.Queue[int | None]] = {}
+        self._cancelled: set[str] = set()
+        self._ready = asyncio.Event()
+        self._worker: asyncio.Task[None] | None = None
+        self._closed = False
+
+    def start(self) -> None:
+        if self._worker is None:
+            self._worker = asyncio.create_task(self._run())
+
+    async def shutdown(self) -> None:
+        self._closed = True
+        self._ready.set()
+        if self._worker is not None:
+            await self._worker
+            self._worker = None
+
+    async def stream(self, request: GenerationRequest) -> AsyncIterator[int]:
+        if self._closed:
+            raise RuntimeError("scheduler is shut down")
+        self.start()
+        queue: asyncio.Queue[int | None] = asyncio.Queue()
+        self._scheduler.add_request(request)
+        self._queues[request.request_id] = queue
+        self._ready.set()
+        try:
+            while (token := await queue.get()) is not None:
+                yield token
+        finally:
+            self.cancel(request.request_id)
+
+    def cancel(self, request_id: str) -> bool:
+        if self._scheduler.get_request(request_id) is None:
+            return False
+        self._cancelled.add(request_id)
+        self._ready.set()
+        return True
+
+    async def _run(self) -> None:
+        while not self._closed:
+            if not self._active and self._scheduler.num_waiting == 0:
+                self._ready.clear()
+                await self._ready.wait()
+                continue
+
+            self._finish_cancelled()
+            decodable = [state for state in self._active.values() if state.pending_token is not None]
+            if decodable:
+                self._publish(decodable, await asyncio.to_thread(self._generator.decode, decodable))
+            await self._admit()
+            await asyncio.sleep(0)
+
+        self._finish(list(self._active.values()))
+
+    async def _admit(self) -> None:
+        capacity = self._max_slots - len(self._active)
+        if capacity <= 0 or self._scheduler.num_waiting == 0:
+            return
+        if self._active:
+            params = next(iter(self._active.values())).request.params
+            requests = self._scheduler.pop_matching(capacity, params)
+        else:
+            requests = self._scheduler.pop_batch(capacity)
+        if not requests:
+            return
+        used_slots = {state.slot for state in self._active.values()}
+        states = [
+            ActiveRequest(request, slot, self._queues[request.request_id])
+            for request, slot in zip(requests, (slot for slot in range(self._max_slots) if slot not in used_slots))
+        ]
+        self._active.update({state.request.request_id: state for state in states})
+        self._publish(states, await asyncio.to_thread(self._generator.prefill, states))
+
+    def _publish(self, states: list[ActiveRequest], tokens: list[int]) -> None:
+        if len(states) != len(tokens):
+            raise RuntimeError("continuous generator returned the wrong number of tokens")
+        finished = []
+        for state, token in zip(states, tokens):
+            state.generated_token_ids.append(token)
+            state.pending_token = token
+            self._queues[state.request.request_id].put_nowait(token)
+            if token == self._eos_token_id or len(state.generated_token_ids) >= state.request.max_new_tokens:
+                finished.append(state)
+        self._finish(finished)
+
+    def _finish_cancelled(self) -> None:
+        self._finish([state for request_id, state in self._active.items() if request_id in self._cancelled])
+        for request_id in self._cancelled.copy():
+            if self._scheduler.cancel_request(request_id):
+                queue = self._queues.pop(request_id, None)
+                if queue is not None:
+                    queue.put_nowait(None)
+            self._cancelled.discard(request_id)
+
+    def _finish(self, states: list[ActiveRequest]) -> None:
+        if not states:
+            return
+        self._generator.release(states)
+        for state in states:
+            request_id = state.request.request_id
+            self._active.pop(request_id, None)
+            self._scheduler.finish_request(request_id)
+            queue = self._queues.pop(request_id, None)
+            if queue is not None:
+                queue.put_nowait(None)
 
 
 class AsyncBatchScheduler(Generic[_T]):
