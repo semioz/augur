@@ -15,7 +15,7 @@ from augur.config import QwenConfig
 from augur.generation import FixedSlotDecoder, generate
 from augur.generation import generate_stream as generate_token_stream
 from augur.sampling import sample_next_token
-from augur.scheduler import ActiveRequest, AsyncBatchScheduler, AsyncContinuousScheduler, GenerationRequest
+from augur.scheduler import ActiveRequest, AsyncContinuousScheduler, GenerationRequest
 from augur.text import apply_stop_strings
 from augur.tokenizer import Tokenizer
 from augur.weights import Weights, load_weights
@@ -239,7 +239,6 @@ class ContinuousEngine:
 
 
 def create_app(engine: AugurEngine) -> FastAPI:
-    batch_scheduler: AsyncBatchScheduler[GenerateResponse] = AsyncBatchScheduler(engine)
     continuous_scheduler = AsyncContinuousScheduler(
         ContinuousEngine(
             engine,
@@ -252,10 +251,8 @@ def create_app(engine: AugurEngine) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        batch_scheduler.start()
         continuous_scheduler.start()
         yield
-        await batch_scheduler.shutdown()
         await continuous_scheduler.shutdown()
 
     app = FastAPI(title="augur", lifespan=lifespan)
@@ -266,16 +263,30 @@ def create_app(engine: AugurEngine) -> FastAPI:
 
     @app.post("/generate")
     async def generate_endpoint(request: GenerateRequest) -> GenerateResponse:
-        return await batch_scheduler.generate(
-            GenerationRequest(
-                request_id=uuid4().hex,
-                prompt=request.prompt,
-                max_new_tokens=request.max_new_tokens,
-                temperature=request.temperature,
-                top_k=request.top_k,
-                top_p=request.top_p,
-                stop=request.stop,
-            )
+        token_ids: list[int] = []
+        emitted_text = ""
+        generation_request = GenerationRequest(
+            request_id=uuid4().hex,
+            prompt=request.prompt,
+            max_new_tokens=request.max_new_tokens,
+            temperature=request.temperature,
+            top_k=request.top_k,
+            top_p=request.top_p,
+            stop=request.stop,
+        )
+        async for token_id in continuous_scheduler.stream(generation_request):
+            token_ids.append(token_id)
+            text = engine.tokenizer.decode(token_ids).lstrip()
+            if any(stop_text in text for stop_text in request.stop):
+                emitted_text = apply_stop_strings(text, request.stop)
+                break
+            emitted_text = text
+        prompt_tokens = len(engine.tokenizer.encode(request.prompt))
+        return GenerateResponse(
+            text=emitted_text,
+            prompt_tokens=prompt_tokens,
+            output_tokens=prompt_tokens + len(token_ids),
+            generated_tokens=len(token_ids),
         )
 
     @app.post("/generate_stream")

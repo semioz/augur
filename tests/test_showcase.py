@@ -26,7 +26,11 @@ class FakeEngine:
     cfg = SimpleNamespace(max_position_embeddings=16)
     device = torch.device("cpu")
     weights = object()
-    tokenizer = SimpleNamespace(eos_token_id=2, decode=lambda token_ids: "Hello" if len(token_ids) == 1 else "Hello world")
+    tokenizer = SimpleNamespace(
+        eos_token_id=2,
+        encode=lambda _text: [1],
+        decode=lambda token_ids: "Hello" if len(token_ids) == 1 else "Hello world",
+    )
 
     def generate_batch(self, _requests):
         return []
@@ -56,3 +60,15 @@ def test_stream_reports_measured_token_rate(monkeypatch) -> None:
 
     assert '"generated_tokens": 2' in response.text
     assert '"tokens_per_second":' in response.text
+
+
+def test_generate_uses_continuous_scheduler(monkeypatch) -> None:
+    import augur.server as server
+    from augur.showcase import create_showcase_app
+
+    monkeypatch.setattr(server, "ContinuousEngine", FakeContinuousEngine)
+    with TestClient(create_showcase_app(FakeEngine())) as client:
+        response = client.post("/generate", json={"prompt": "hello"})
+
+    assert response.json()["text"] == "Hello world"
+    assert response.json()["generated_tokens"] == 2
