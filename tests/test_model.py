@@ -310,6 +310,24 @@ def test_model_writes_only_selected_cache_slot() -> None:
     assert cache.seq_lens.tolist() == [0, 2]
 
 
+def test_model_masks_shorter_slot_against_longer_cached_slot() -> None:
+    cfg = _tiny_config_with_layer()
+    w = _build_weights(cfg)
+    cache = new_kv_cache(
+        cfg,
+        batch_size=2,
+        max_seq_len=4,
+        device=torch.device("cpu"),
+        dtype=w.embed_tokens.dtype,
+    )
+
+    model(torch.tensor([[1, 2, 3]]), w, cfg, cache=cache, cache_slots=torch.tensor([0]))
+    logits = model(torch.tensor([[4, 5]]), w, cfg, cache=cache, cache_slots=torch.tensor([1]))
+
+    assert logits.shape == (1, 2, cfg.vocab_size)
+    assert cache.seq_lens.tolist() == [3, 2]
+
+
 def test_model_forwards_paged_cache(monkeypatch) -> None:
     cfg = _tiny_config_with_layer()
     w = _build_weights(cfg)

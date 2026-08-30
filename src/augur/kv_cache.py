@@ -50,7 +50,7 @@ def cache_attention_mask(
             seq_lens,
             position_ids.to(device=seq_lens.device).max(dim=1).values + 1,
         )
-    positions = torch.arange(int(seq_lens.max().item()), device=seq_lens.device)
+    positions = torch.arange(max(cache.seq_len, int(seq_lens.max().item())), device=seq_lens.device)
     return positions.unsqueeze(0) < seq_lens.unsqueeze(1)
 
 

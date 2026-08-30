@@ -26,15 +26,21 @@ def model(
     batch, seq = input_ids.shape
     if position_ids is None:
         past_len = 0
+        if cache is not None and cache_slots is not None:
+            position_ids = cache.seq_lens[cache_slots].unsqueeze(1) + torch.arange(
+                seq,
+                device=input_ids.device,
+            )
         if cache is not None:
             past_len = cache.seq_len
         if paged_cache is not None:
             past_len = paged_cache.block_table.seq_len
-        position_ids = torch.arange(
-            past_len,
-            past_len + seq,
-            device=input_ids.device,
-        ).expand(batch, -1)
+        if position_ids is None:
+            position_ids = torch.arange(
+                past_len,
+                past_len + seq,
+                device=input_ids.device,
+            ).expand(batch, -1)
 
     if cache is not None:
         cache_mask = cache_attention_mask(cache, position_ids, cache_slots)
