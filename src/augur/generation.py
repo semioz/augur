@@ -3,7 +3,7 @@ from collections.abc import Iterator
 from torch import Tensor
 
 from augur.config import QwenConfig
-from augur.kv_cache import new_kv_cache
+from augur.kv_cache import KVSlotSnapshot, export_kv_slot, import_kv_slot, new_kv_cache
 from augur.model import model
 from augur.paged_kv_cache import PagedKVCacheState, SequenceBlockTable, new_paged_kv_cache
 from augur.prefix_cache import PrefixCache, copy_prefix_into_cache
@@ -61,6 +61,12 @@ class FixedSlotDecoder:
             cache_slots=cache_slots,
             position_ids=position_ids,
         )
+
+    def export_slot(self, slot: int) -> KVSlotSnapshot:
+        return export_kv_slot(self.cache, slot)
+
+    def import_slot(self, slot: int, snapshot: KVSlotSnapshot) -> None:
+        import_kv_slot(self.cache, slot, snapshot)
 
 
 def generate(

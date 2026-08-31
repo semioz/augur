@@ -7,6 +7,7 @@ from transformers import Qwen2Config as HFQwen2Config
 from transformers.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM
 
 from augur.config import QwenConfig
+from augur.generation import FixedSlotDecoder
 from augur.kv_cache import new_kv_cache
 import augur.model as model_module
 from augur.model import model
@@ -333,6 +334,23 @@ def test_model_masks_shorter_slot_against_longer_cached_slot() -> None:
 
     assert logits.shape == (1, 2, cfg.vocab_size)
     assert cache.seq_lens.tolist() == [3, 2]
+
+
+def test_fixed_slot_decoder_handoff_matches_source_decode() -> None:
+    cfg = _tiny_config_with_layer()
+    w = _build_weights(cfg)
+    source = FixedSlotDecoder(w, cfg, max_slots=1, max_seq_len=8)
+    target = FixedSlotDecoder(w, cfg, max_slots=1, max_seq_len=8)
+    prompt = torch.tensor([[1, 2, 3]])
+
+    logits = source.prefill(prompt, torch.tensor([0]))
+    next_token = logits[:, -1].argmax(dim=-1, keepdim=True)
+    target.import_slot(0, source.export_slot(0))
+
+    torch.testing.assert_close(
+        target.decode(next_token, torch.tensor([0])),
+        source.decode(next_token, torch.tensor([0])),
+    )
 
 
 def test_model_forwards_paged_cache(monkeypatch) -> None:
