@@ -18,6 +18,13 @@ class KVCache:
         return self.keys.shape[3]
 
 
+@dataclass(frozen=True)
+class KVSlotSnapshot:
+    keys: Tensor
+    values: Tensor
+    seq_len: int
+
+
 def new_kv_cache(
     cfg: QwenConfig,
     batch_size: int,
@@ -37,6 +44,31 @@ def new_kv_cache(
         values=torch.empty(shape, device=device, dtype=dtype),
         seq_lens=torch.zeros(batch_size, device=device, dtype=torch.long),
     )
+
+
+def export_kv_slot(cache: KVCache, slot: int) -> KVSlotSnapshot:
+    if not 0 <= slot < cache.keys.shape[1]:
+        raise ValueError("slot is outside the cache batch range")
+    seq_len = int(cache.seq_lens[slot].item())
+    return KVSlotSnapshot(
+        keys=cache.keys[:, slot, :, :seq_len].detach().to("cpu").clone(),
+        values=cache.values[:, slot, :, :seq_len].detach().to("cpu").clone(),
+        seq_len=seq_len,
+    )
+
+
+def import_kv_slot(cache: KVCache, slot: int, snapshot: KVSlotSnapshot) -> None:
+    if not 0 <= slot < cache.keys.shape[1]:
+        raise ValueError("slot is outside the cache batch range")
+    if snapshot.seq_len > cache.max_seq_len:
+        raise ValueError("snapshot exceeds cache capacity")
+    expected_shape = (cache.keys.shape[0], cache.keys.shape[2], snapshot.seq_len, cache.keys.shape[4])
+    if snapshot.keys.shape != expected_shape or snapshot.values.shape != expected_shape:
+        raise ValueError("snapshot shape does not match cache shape")
+    cache.keys[:, slot, :, : snapshot.seq_len].copy_(snapshot.keys.to(cache.keys))
+    cache.values[:, slot, :, : snapshot.seq_len].copy_(snapshot.values.to(cache.values))
+    cache.seq_lens[slot] = snapshot.seq_len
+    cache.seq_len = max(cache.seq_len, snapshot.seq_len)
 
 
 def cache_attention_mask(

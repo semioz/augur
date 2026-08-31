@@ -7,7 +7,15 @@ import torch
 import pytest
 
 from augur.config import QwenConfig
-from augur.kv_cache import cache_attention_mask, format_bytes, kv_cache_nbytes, new_kv_cache, write_kv
+from augur.kv_cache import (
+    cache_attention_mask,
+    export_kv_slot,
+    format_bytes,
+    import_kv_slot,
+    kv_cache_nbytes,
+    new_kv_cache,
+    write_kv,
+)
 
 
 def tiny_cfg() -> QwenConfig:
@@ -99,6 +107,23 @@ def test_cache_attention_mask_hides_unwritten_positions() -> None:
     cache.seq_len = 3
 
     assert cache_attention_mask(cache).tolist() == [[True, True, True], [True, False, False]]
+
+
+def test_kv_slot_round_trip_preserves_only_the_selected_sequence() -> None:
+    cfg = tiny_cfg()
+    source = new_kv_cache(cfg, batch_size=2, max_seq_len=4, device=torch.device("cpu"), dtype=torch.float32)
+    key = torch.randn(1, 1, 2, 4)
+    value = torch.randn_like(key)
+    write_kv(source, 0, torch.tensor([[0, 1]]), key, value, cache_slots=torch.tensor([1]))
+
+    snapshot = export_kv_slot(source, 1)
+    target = new_kv_cache(cfg, batch_size=2, max_seq_len=4, device=torch.device("cpu"), dtype=torch.float32)
+    import_kv_slot(target, 0, snapshot)
+
+    assert snapshot.seq_len == 2
+    assert target.seq_lens.tolist() == [2, 0]
+    torch.testing.assert_close(target.keys[:, 0, :, :2], source.keys[:, 1, :, :2])
+    assert target.keys[:, 1].eq(0).all()
 
 
 def test_kv_cache_nbytes_counts_keys_and_values() -> None:
