@@ -1,5 +1,6 @@
 import torch
 from collections.abc import Iterator
+from dataclasses import dataclass
 from torch import Tensor
 
 from augur.config import QwenConfig
@@ -9,6 +10,14 @@ from augur.paged_kv_cache import PagedKVCacheState, SequenceBlockTable, new_page
 from augur.prefix_cache import PrefixCache, copy_prefix_into_cache
 from augur.sampling import sample_next_token
 from augur.weights import Weights
+
+
+@dataclass(frozen=True)
+class PrefillResult:
+    snapshot: KVSlotSnapshot
+    first_token: int
+    cache_shape: tuple[int, int, int]
+    dtype: torch.dtype
 
 
 class FixedSlotDecoder:
@@ -67,6 +76,34 @@ class FixedSlotDecoder:
 
     def import_slot(self, slot: int, snapshot: KVSlotSnapshot) -> None:
         import_kv_slot(self.cache, slot, snapshot)
+
+    def prefill_for_handoff(
+        self,
+        input_ids: Tensor,
+        *,
+        slot: int,
+        attention_mask: Tensor | None = None,
+        temperature: float = 0.0,
+        top_k: int | None = None,
+        top_p: float | None = None,
+    ) -> PrefillResult:
+        if input_ids.shape[0] != 1:
+            raise ValueError("prefill handoff currently supports batch size 1")
+        logits = self.prefill(input_ids, torch.tensor([slot], device=input_ids.device), attention_mask)
+        next_logits = _next_token_logits(logits, attention_mask)
+        first_token = int(sample_next_token(next_logits, temperature, top_k, top_p).item())
+        return PrefillResult(
+            snapshot=self.export_slot(slot),
+            first_token=first_token,
+            cache_shape=(self.cache.keys.shape[0], self.cache.keys.shape[2], self.cache.keys.shape[4]),
+            dtype=self.cache.keys.dtype,
+        )
+
+    def import_prefill_result(self, *, slot: int, result: PrefillResult) -> None:
+        cache_shape = (self.cache.keys.shape[0], self.cache.keys.shape[2], self.cache.keys.shape[4])
+        if result.cache_shape != cache_shape or result.dtype != self.cache.keys.dtype:
+            raise ValueError("prefill result is incompatible with this decoder")
+        self.import_slot(slot, result.snapshot)
 
 
 def generate(

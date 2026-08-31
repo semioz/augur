@@ -353,6 +353,22 @@ def test_fixed_slot_decoder_handoff_matches_source_decode() -> None:
     )
 
 
+def test_fixed_slot_decoder_prefill_result_preserves_first_token_and_cache() -> None:
+    cfg = _tiny_config_with_layer()
+    w = _build_weights(cfg)
+    source = FixedSlotDecoder(w, cfg, max_slots=1, max_seq_len=8)
+    target = FixedSlotDecoder(w, cfg, max_slots=1, max_seq_len=8)
+    expected = FixedSlotDecoder(w, cfg, max_slots=1, max_seq_len=8)
+    prompt = torch.tensor([[1, 2, 3]])
+
+    result = source.prefill_for_handoff(prompt, slot=0)
+    expected_logits = expected.prefill(prompt, torch.tensor([0]))
+    target.import_prefill_result(slot=0, result=result)
+
+    assert result.first_token == expected_logits[:, -1].argmax().item()
+    assert target.cache.seq_lens.tolist() == [3]
+
+
 def test_model_forwards_paged_cache(monkeypatch) -> None:
     cfg = _tiny_config_with_layer()
     w = _build_weights(cfg)
