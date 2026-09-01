@@ -46,13 +46,17 @@ def new_kv_cache(
     )
 
 
-def export_kv_slot(cache: KVCache, slot: int) -> KVSlotSnapshot:
+def export_kv_slot(
+    cache: KVCache,
+    slot: int,
+    device: torch.device | str = "cpu",
+) -> KVSlotSnapshot:
     if not 0 <= slot < cache.keys.shape[1]:
         raise ValueError("slot is outside the cache batch range")
     seq_len = int(cache.seq_lens[slot].item())
     return KVSlotSnapshot(
-        keys=cache.keys[:, slot, :, :seq_len].detach().to("cpu").clone(),
-        values=cache.values[:, slot, :, :seq_len].detach().to("cpu").clone(),
+        keys=cache.keys[:, slot, :, :seq_len].detach().to(device).clone(),
+        values=cache.values[:, slot, :, :seq_len].detach().to(device).clone(),
         seq_len=seq_len,
     )
 

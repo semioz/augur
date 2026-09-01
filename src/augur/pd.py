@@ -21,8 +21,9 @@ class DecodeMetrics:
 
 
 class PrefillService:
-    def __init__(self, decoder: FixedSlotDecoder) -> None:
+    def __init__(self, decoder: FixedSlotDecoder, export_device: torch.device | str = "cpu") -> None:
         self.decoder = decoder
+        self.export_device = export_device
 
     def prefill(
         self,
@@ -48,7 +49,7 @@ class PrefillService:
         first_token = int(sample_next_token(next_logits, temperature, top_k, top_p).item())
         started_at = perf_counter()
         result = PrefillResult(
-            snapshot=self.decoder.export_slot(0),
+            snapshot=self.decoder.export_slot(0, self.export_device),
             first_token=first_token,
             cache_shape=(self.decoder.cache.keys.shape[0], self.decoder.cache.keys.shape[2], self.decoder.cache.keys.shape[4]),
             dtype=self.decoder.cache.keys.dtype,

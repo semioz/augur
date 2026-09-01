@@ -22,80 +22,50 @@ image = (
 )
 
 
-def load_decoder() -> tuple[FixedSlotDecoder, Tokenizer]:
+def load_decoder(device: torch.device) -> tuple[FixedSlotDecoder, Tokenizer]:
     model_dir = Path("/models/qwen2.5-0.5b")
     cfg = QwenConfig.from_pretrained(model_dir)
     tokenizer = Tokenizer.from_pretrained(model_dir)
-    weights = load_weights(
-        model_dir / "model.safetensors",
-        cfg,
-        device=torch.device("cuda"),
-        dtype=torch.float16,
-    )
+    weights = load_weights(model_dir / "model.safetensors", cfg, device=device, dtype=torch.float16)
     return FixedSlotDecoder(weights, cfg, max_slots=1, max_seq_len=8192), tokenizer
 
 
-@app.cls(image=image, gpu="A10G", timeout=300, volumes={"/models": models})
-class PrefillWorker:
+@app.cls(image=image, gpu="A10G:2", timeout=300, volumes={"/models": models})
+class PDWorker:
     @modal.enter()
     def load(self) -> None:
-        decoder, self.tokenizer = load_decoder()
-        self.service = PrefillService(decoder)
+        prefill_decoder, self.tokenizer = load_decoder(torch.device("cuda:0"))
+        decode_decoder, _ = load_decoder(torch.device("cuda:1"))
+        self.peer_access = torch.cuda.can_device_access_peer(0, 1)
+        self.prefill = PrefillService(prefill_decoder, export_device=torch.device("cuda:1"))
+        self.decode = DecodeService(decode_decoder)
 
     @modal.method()
-    def prefill(self, prompt: str, prompt_tokens: int = 0):
+    def generate(self, prompt: str, max_new_tokens: int, prompt_tokens: int = 0):
         if prompt_tokens > 0:
             token_id = self.tokenizer.encode(" hello")[0]
-            input_ids = torch.full((1, prompt_tokens), token_id, device=torch.device("cuda"))
+            input_ids = torch.full((1, prompt_tokens), token_id, device=torch.device("cuda:0"))
         else:
-            input_ids = torch.tensor([self.tokenizer.encode(prompt)], device=torch.device("cuda"))
+            input_ids = torch.tensor([self.tokenizer.encode(prompt)], device=torch.device("cuda:0"))
         with torch.no_grad():
-            return self.service.prefill(input_ids)
-
-
-@app.cls(image=image, gpu="A10G", timeout=300, volumes={"/models": models})
-class DecodeWorker:
-    @modal.enter()
-    def load(self) -> None:
-        decoder, self.tokenizer = load_decoder()
-        self.service = DecodeService(decoder)
-
-    @modal.method()
-    def decode(self, result, max_new_tokens: int):
-        with torch.no_grad():
-            import_metrics = self.service.start(result)
+            result, prefill_metrics = self.prefill.prefill(input_ids)
+            import_metrics = self.decode.start(result)
             token_ids = [result.first_token]
             decode_seconds = 0.0
             while len(token_ids) < max_new_tokens and token_ids[-1] != self.tokenizer.eos_token_id:
-                logits, metrics = self.service.decode(token_ids[-1])
+                logits, metrics = self.decode.decode(token_ids[-1])
                 decode_seconds += metrics.decode_seconds
                 token_ids.append(int(sample_next_token(logits[:, -1]).item()))
-        return self.tokenizer.decode(token_ids).lstrip(), len(token_ids), import_metrics, decode_seconds
-
-
-def run_once(
-    prefill_worker,
-    decode_worker,
-    prompt: str,
-    max_new_tokens: int,
-    prompt_tokens: int,
-) -> dict[str, float | int | str]:
-    prefill_started_at = time.perf_counter()
-    result, prefill_metrics = prefill_worker.prefill.remote(prompt, prompt_tokens)
-    prefill_rpc_seconds = time.perf_counter() - prefill_started_at
-    decode_started_at = time.perf_counter()
-    text, generated_tokens, import_metrics, decode_seconds = decode_worker.decode.remote(result, max_new_tokens)
-    decode_rpc_seconds = time.perf_counter() - decode_started_at
-    return {
-        "text": text,
-        "generated_tokens": generated_tokens,
-        "prefill_seconds": prefill_metrics.prefill_seconds,
-        "export_seconds": prefill_metrics.export_seconds,
-        "prefill_rpc_seconds": prefill_rpc_seconds,
-        "import_seconds": import_metrics.import_seconds,
-        "decode_seconds": decode_seconds,
-        "decode_rpc_seconds": decode_rpc_seconds,
-    }
+        return {
+            "text": self.tokenizer.decode(token_ids).lstrip(),
+            "generated_tokens": len(token_ids),
+            "peer_access": self.peer_access,
+            "prefill_seconds": prefill_metrics.prefill_seconds,
+            "handoff_seconds": prefill_metrics.export_seconds,
+            "import_seconds": import_metrics.import_seconds,
+            "decode_seconds": decode_seconds,
+            "decode_tokens_per_second": (len(token_ids) - 1) / decode_seconds,
+        }
 
 
 @app.local_entrypoint()
@@ -108,22 +78,17 @@ def main(
 ) -> None:
     if warmup < 0 or runs <= 0 or not 0 <= prompt_tokens <= 8192:
         raise ValueError("invalid warmup, runs, or prompt_tokens")
-    prefill_worker = PrefillWorker()
-    decode_worker = DecodeWorker()
+    worker = PDWorker()
     for _ in range(warmup):
-        run_once(prefill_worker, decode_worker, prompt, max_new_tokens, prompt_tokens)
-    measurements = [
-        run_once(prefill_worker, decode_worker, prompt, max_new_tokens, prompt_tokens)
-        for _ in range(runs)
-    ]
-    keys = [key for key in measurements[0] if key not in {"text", "generated_tokens"}]
+        worker.generate.remote(prompt, max_new_tokens, prompt_tokens)
+    measurements = [worker.generate.remote(prompt, max_new_tokens, prompt_tokens) for _ in range(runs)]
+    keys = [key for key in measurements[0] if key not in {"text", "peer_access", "generated_tokens"}]
     medians = {key: sorted(float(measurement[key]) for measurement in measurements)[runs // 2] for key in keys}
-    generated_tokens = int(measurements[0]["generated_tokens"])
     print(
         {
             "text": measurements[0]["text"],
-            "generated_tokens": generated_tokens,
+            "generated_tokens": measurements[0]["generated_tokens"],
+            "peer_access": measurements[0]["peer_access"],
             **medians,
-            "decode_tokens_per_second": (generated_tokens - 1) / medians["decode_seconds"],
         }
     )

@@ -71,8 +71,8 @@ class FixedSlotDecoder:
             position_ids=position_ids,
         )
 
-    def export_slot(self, slot: int) -> KVSlotSnapshot:
-        return export_kv_slot(self.cache, slot)
+    def export_slot(self, slot: int, device: torch.device | str = "cpu") -> KVSlotSnapshot:
+        return export_kv_slot(self.cache, slot, device)
 
     def import_slot(self, slot: int, snapshot: KVSlotSnapshot) -> None:
         import_kv_slot(self.cache, slot, snapshot)
