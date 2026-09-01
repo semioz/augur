@@ -43,8 +43,12 @@ class PrefillWorker:
         self.service = PrefillService(decoder)
 
     @modal.method()
-    def prefill(self, prompt: str):
-        input_ids = torch.tensor([self.tokenizer.encode(prompt)], device=torch.device("cuda"))
+    def prefill(self, prompt: str, prompt_tokens: int = 0):
+        if prompt_tokens > 0:
+            token_id = self.tokenizer.encode(" hello")[0]
+            input_ids = torch.full((1, prompt_tokens), token_id, device=torch.device("cuda"))
+        else:
+            input_ids = torch.tensor([self.tokenizer.encode(prompt)], device=torch.device("cuda"))
         with torch.no_grad():
             return self.service.prefill(input_ids)
 
@@ -69,9 +73,15 @@ class DecodeWorker:
         return self.tokenizer.decode(token_ids).lstrip(), len(token_ids), import_metrics, decode_seconds
 
 
-def run_once(prefill_worker, decode_worker, prompt: str, max_new_tokens: int) -> dict[str, float | int | str]:
+def run_once(
+    prefill_worker,
+    decode_worker,
+    prompt: str,
+    max_new_tokens: int,
+    prompt_tokens: int,
+) -> dict[str, float | int | str]:
     prefill_started_at = time.perf_counter()
-    result, prefill_metrics = prefill_worker.prefill.remote(prompt)
+    result, prefill_metrics = prefill_worker.prefill.remote(prompt, prompt_tokens)
     prefill_rpc_seconds = time.perf_counter() - prefill_started_at
     decode_started_at = time.perf_counter()
     text, generated_tokens, import_metrics, decode_seconds = decode_worker.decode.remote(result, max_new_tokens)
@@ -94,14 +104,18 @@ def main(
     max_new_tokens: int = 32,
     warmup: int = 1,
     runs: int = 3,
+    prompt_tokens: int = 0,
 ) -> None:
-    if warmup < 0 or runs <= 0:
-        raise ValueError("warmup must be non-negative and runs must be positive")
+    if warmup < 0 or runs <= 0 or not 0 <= prompt_tokens <= 8192:
+        raise ValueError("invalid warmup, runs, or prompt_tokens")
     prefill_worker = PrefillWorker()
     decode_worker = DecodeWorker()
     for _ in range(warmup):
-        run_once(prefill_worker, decode_worker, prompt, max_new_tokens)
-    measurements = [run_once(prefill_worker, decode_worker, prompt, max_new_tokens) for _ in range(runs)]
+        run_once(prefill_worker, decode_worker, prompt, max_new_tokens, prompt_tokens)
+    measurements = [
+        run_once(prefill_worker, decode_worker, prompt, max_new_tokens, prompt_tokens)
+        for _ in range(runs)
+    ]
     keys = [key for key in measurements[0] if key not in {"text", "generated_tokens"}]
     medians = {key: sorted(float(measurement[key]) for measurement in measurements)[runs // 2] for key in keys}
     generated_tokens = int(measurements[0]["generated_tokens"])
