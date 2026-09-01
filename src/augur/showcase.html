@@ -66,6 +66,8 @@
       .send { background: var(--accent); color: white; padding: 9px 15px; }
       .send:hover { background: var(--accent-dark); }
       .stop { background: transparent; color: var(--signal); display: none; padding: 9px 5px; }
+      .mode { background: transparent; border: 1px solid var(--line); color: var(--muted); font-size: .75rem; padding: 6px 8px; }
+      .mode.active { background: var(--ink); border-color: var(--ink); color: white; }
       .side { display: grid; gap: 18px; align-content: start; }
       .side section { padding: 22px; }
       .side h2 { font-family: Georgia, serif; font-size: 1.2rem; font-weight: 500; margin: 0 0 16px; }
@@ -86,7 +88,7 @@
         <section class="panel chat">
           <div class="panel-top"><span class="label">Streaming workspace</span><span class="status"><i class="dot"></i> ready</span></div>
           <div class="conversation"><div><div class="message-label">Try Augur</div><div class="prompt-text">Ask a short question to the reference engine.</div></div><div><div class="message-label">Response</div><div id="response">The response will appear here.</div><div id="response-metrics"></div></div></div>
-          <form id="generation-form"><textarea id="prompt" maxlength="800" placeholder="Write one short sentence about GPUs.">Write one short sentence about GPUs.</textarea><div class="controls"><label class="token-control">Max tokens <input id="max-tokens" type="number" min="1" max="128" value="64" /></label><div><button class="stop" id="stop" type="button">Stop</button><button class="send" id="send" type="submit">Generate →</button></div></div></form>
+          <form id="generation-form"><textarea id="prompt" maxlength="800" placeholder="Write one short sentence about GPUs.">Write one short sentence about GPUs.</textarea><div class="controls"><label class="token-control">Max tokens <input id="max-tokens" type="number" min="1" max="128" value="64" /></label><div><button class="mode active" data-mode="normal" type="button">Normal · 1 GPU</button><button class="mode" data-mode="pd" type="button">PD · 2 GPUs</button><button class="stop" id="stop" type="button">Stop</button><button class="send" id="send" type="submit">Generate →</button></div></div></form>
         </section>
         <aside class="side"><section class="panel"><h2>Runtime</h2><dl><div><dt>model</dt><dd>Qwen2.5-0.5B</dd></div><div><dt>precision</dt><dd>FP16</dd></div><div><dt>execution</dt><dd>PyTorch</dd></div><div><dt>stream</dt><dd>SSE</dd></div></dl></section><section class="panel"><h2>Examples</h2><div class="examples"><button class="example" data-prompt="Explain KV caching in one paragraph.">Explain KV caching</button><button class="example" data-prompt="What makes a GPU good at matrix multiplication?">Ask about GPUs</button><button class="example" data-prompt="Write a haiku about compiler optimizations.">Write a haiku</button></div></section></aside>
       </div>
@@ -101,6 +103,9 @@
       const send = document.querySelector("#send");
       const stop = document.querySelector("#stop");
       let controller;
+      let mode = "normal";
+      const pdUrl = "https://semioz--augur-pd-pdworker-web.modal.run/generate_stream";
+      document.querySelectorAll(".mode").forEach((button) => button.addEventListener("click", () => { mode = button.dataset.mode; document.querySelectorAll(".mode").forEach((item) => item.classList.toggle("active", item === button)); }));
       document.querySelectorAll(".example").forEach((button) => button.addEventListener("click", () => { prompt.value = button.dataset.prompt; prompt.focus(); }));
       stop.addEventListener("click", () => controller?.abort());
       form.addEventListener("submit", async (event) => {
@@ -114,7 +119,7 @@
         send.disabled = true;
         stop.style.display = "inline";
         try {
-          const result = await fetch("/generate_stream", { method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal, body: JSON.stringify({ prompt: text, max_new_tokens: Math.min(128, Math.max(1, Number(maxTokens.value) || 64)) }) });
+          const result = await fetch(mode === "pd" ? pdUrl : "/generate_stream", { method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal, body: JSON.stringify({ prompt: text, max_new_tokens: Math.min(128, Math.max(1, Number(maxTokens.value) || 64)) }) });
           if (!result.ok || !result.body) throw new Error("The demo is unavailable. Please try again shortly.");
           const reader = result.body.getReader();
           const decoder = new TextDecoder();

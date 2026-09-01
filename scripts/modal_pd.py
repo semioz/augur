@@ -6,6 +6,7 @@ from pathlib import Path
 import modal
 import torch
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -89,6 +90,12 @@ class PDWorker:
     @modal.asgi_app()
     def web(self) -> FastAPI:
         web = FastAPI(title="augur-pd")
+        web.add_middleware(
+            CORSMiddleware,
+            allow_origins=["https://semioz--augur-showcase-augurshowcase-web.modal.run"],
+            allow_methods=["POST"],
+            allow_headers=["content-type"],
+        )
 
         @web.post("/generate_stream")
         def generate_stream(request: GenerateRequest) -> StreamingResponse:
