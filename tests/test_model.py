@@ -11,6 +11,7 @@ from augur.generation import FixedSlotDecoder
 from augur.kv_cache import new_kv_cache
 import augur.model as model_module
 from augur.model import model
+from augur.pd import DecodeService, PrefillService
 from augur.rms_norm import rms_norm
 from augur.weights import Attention, DecoderLayer, Linear, MLP, RMSNorm, Weights
 
@@ -367,6 +368,26 @@ def test_fixed_slot_decoder_prefill_result_preserves_first_token_and_cache() -> 
 
     assert result.first_token == expected_logits[:, -1].argmax().item()
     assert target.cache.seq_lens.tolist() == [3]
+
+
+def test_pd_services_handoff_preserves_decode_logits() -> None:
+    cfg = _tiny_config_with_layer()
+    w = _build_weights(cfg)
+    prefill_decoder = FixedSlotDecoder(w, cfg, max_slots=1, max_seq_len=8)
+    decode_decoder = FixedSlotDecoder(w, cfg, max_slots=1, max_seq_len=8)
+    prefill = PrefillService(prefill_decoder)
+    decode = DecodeService(decode_decoder)
+
+    result, prefill_metrics = prefill.prefill(torch.tensor([[1, 2, 3]]))
+    import_metrics = decode.start(result)
+    handoff_logits, decode_metrics = decode.decode(result.first_token)
+    source_logits = prefill_decoder.decode(torch.tensor([[result.first_token]]), torch.tensor([0]))
+
+    torch.testing.assert_close(handoff_logits, source_logits)
+    assert prefill_metrics.prefill_seconds >= 0
+    assert prefill_metrics.export_seconds >= 0
+    assert import_metrics.import_seconds >= 0
+    assert decode_metrics.decode_seconds >= 0
 
 
 def test_model_forwards_paged_cache(monkeypatch) -> None:
