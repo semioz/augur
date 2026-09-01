@@ -379,11 +379,14 @@ def test_pd_services_handoff_preserves_decode_logits() -> None:
     decode = DecodeService(decode_decoder)
 
     result, prefill_metrics = prefill.prefill(torch.tensor([[1, 2, 3]]))
+    repeated_result, _ = prefill.prefill(torch.tensor([[1, 2, 3]]))
+    assert prefill_decoder.cache.seq_lens.tolist() == [3]
     import_metrics = decode.start(result)
     handoff_logits, decode_metrics = decode.decode(result.first_token)
     source_logits = prefill_decoder.decode(torch.tensor([[result.first_token]]), torch.tensor([0]))
 
     torch.testing.assert_close(handoff_logits, source_logits)
+    assert repeated_result.first_token == result.first_token
     assert prefill_metrics.prefill_seconds >= 0
     assert prefill_metrics.export_seconds >= 0
     assert import_metrics.import_seconds >= 0

@@ -35,6 +35,8 @@ class PrefillService:
     ) -> tuple[PrefillResult, PrefillMetrics]:
         if input_ids.shape[0] != 1:
             raise ValueError("PD prefill currently supports batch size 1")
+        self.decoder.cache.seq_lens.zero_()
+        self.decoder.cache.seq_len = 0
         started_at = perf_counter()
         logits = self.decoder.prefill(input_ids, torch.tensor([0], device=input_ids.device), attention_mask)
         prefill_seconds = perf_counter() - started_at
@@ -59,6 +61,8 @@ class DecodeService:
         self.decoder = decoder
 
     def start(self, result: PrefillResult, *, slot: int = 0) -> DecodeMetrics:
+        self.decoder.cache.seq_lens.zero_()
+        self.decoder.cache.seq_len = 0
         started_at = perf_counter()
         self.decoder.import_prefill_result(slot=slot, result=result)
         return DecodeMetrics(import_seconds=perf_counter() - started_at, decode_seconds=0.0)
