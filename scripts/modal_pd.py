@@ -69,23 +69,47 @@ class DecodeWorker:
         return self.tokenizer.decode(token_ids).lstrip(), len(token_ids), import_metrics, decode_seconds
 
 
-@app.local_entrypoint()
-def main(prompt: str = "What is the capital of France?", max_new_tokens: int = 32) -> None:
+def run_once(prefill_worker, decode_worker, prompt: str, max_new_tokens: int) -> dict[str, float | int | str]:
     prefill_started_at = time.perf_counter()
-    result, prefill_metrics = PrefillWorker().prefill.remote(prompt)
+    result, prefill_metrics = prefill_worker.prefill.remote(prompt)
     prefill_rpc_seconds = time.perf_counter() - prefill_started_at
     decode_started_at = time.perf_counter()
-    text, generated_tokens, import_metrics, decode_seconds = DecodeWorker().decode.remote(result, max_new_tokens)
+    text, generated_tokens, import_metrics, decode_seconds = decode_worker.decode.remote(result, max_new_tokens)
     decode_rpc_seconds = time.perf_counter() - decode_started_at
+    return {
+        "text": text,
+        "generated_tokens": generated_tokens,
+        "prefill_seconds": prefill_metrics.prefill_seconds,
+        "export_seconds": prefill_metrics.export_seconds,
+        "prefill_rpc_seconds": prefill_rpc_seconds,
+        "import_seconds": import_metrics.import_seconds,
+        "decode_seconds": decode_seconds,
+        "decode_rpc_seconds": decode_rpc_seconds,
+    }
+
+
+@app.local_entrypoint()
+def main(
+    prompt: str = "What is the capital of France?",
+    max_new_tokens: int = 32,
+    warmup: int = 1,
+    runs: int = 3,
+) -> None:
+    if warmup < 0 or runs <= 0:
+        raise ValueError("warmup must be non-negative and runs must be positive")
+    prefill_worker = PrefillWorker()
+    decode_worker = DecodeWorker()
+    for _ in range(warmup):
+        run_once(prefill_worker, decode_worker, prompt, max_new_tokens)
+    measurements = [run_once(prefill_worker, decode_worker, prompt, max_new_tokens) for _ in range(runs)]
+    keys = [key for key in measurements[0] if key not in {"text", "generated_tokens"}]
+    medians = {key: sorted(float(measurement[key]) for measurement in measurements)[runs // 2] for key in keys}
+    generated_tokens = int(measurements[0]["generated_tokens"])
     print(
         {
-            "text": text,
+            "text": measurements[0]["text"],
             "generated_tokens": generated_tokens,
-            "prefill_seconds": prefill_metrics.prefill_seconds,
-            "export_seconds": prefill_metrics.export_seconds,
-            "prefill_rpc_seconds": prefill_rpc_seconds,
-            "import_seconds": import_metrics.import_seconds,
-            "decode_seconds": decode_seconds,
-            "decode_rpc_seconds": decode_rpc_seconds,
+            **medians,
+            "decode_tokens_per_second": (generated_tokens - 1) / medians["decode_seconds"],
         }
     )
