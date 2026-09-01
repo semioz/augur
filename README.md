@@ -85,6 +85,15 @@ The current benchmark workload is Modal A10G, Qwen2.5-0.5B FP16, batch 1, a 7-to
 
 Packed QKV projections, bypassing the redundant causal mask during single-token decode, and sharing RoPE tables across layers improved Augur throughput by 4%, 8.4%, and 14.7%, respectively. vLLM remains substantially faster because it has a production scheduler and optimized execution path; this comparison is directional, not an apples-to-apples serving benchmark.
 
+### Experimental prefill/decode disaggregation
+
+A separate Modal `A10G:2` prototype runs prefill on GPU 0 and decode on GPU 1. For a warmed synthetic 2k-token prompt, CUDA peer access was available and the KV handoff took **0.184 ms**; decode ran at **36.8 tok/s**. This is an experiment, not the hosted serving path, and is not directly comparable to the batch-1 benchmark above.
+
+```bash
+PYTHONPATH=src uv run --with modal modal run scripts/modal_pd.py \
+  --prompt-tokens 2048 --max-new-tokens 32 --warmup 1 --runs 3
+```
+
 Run Augur on the same workload:
 
 ```bash

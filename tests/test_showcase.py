@@ -15,6 +15,8 @@ def test_showcase_html_includes_the_streaming_demo() -> None:
     assert "Augur" in page
     assert "/generate_stream" in page
     assert "Qwen2.5-0.5B" in page
+    assert "PD · 2 GPUs" in page
+    assert "augur-pd-pdworker-web.modal.run" in page
 
 
 def test_public_generation_request_limits_output_tokens() -> None:
