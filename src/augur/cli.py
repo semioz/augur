@@ -66,6 +66,7 @@ def add_generate_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--model-dir", type=Path, default=MODEL_DIR)
     parser.add_argument("--prompt", action="append", default=None)
     parser.add_argument("--max-new-tokens", type=int, default=200)
+    parser.add_argument("--nvfp4-gate", action="store_true", help="Experimental NVFP4 MLP gate on Blackwell")
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top-k", type=int, default=None)
     parser.add_argument("--top-p", type=float, default=None)
@@ -126,7 +127,10 @@ def run_generate(args: argparse.Namespace) -> None:
     dtype = resolve_dtype(args.dtype, device)
 
     tokenizer = Tokenizer.from_pretrained(args.model_dir)
-    weights = load_weights(args.model_dir / "model.safetensors", cfg, device=device, dtype=dtype)
+    weights = load_weights(
+        args.model_dir / "model.safetensors", cfg, device=device, dtype=dtype,
+        nvfp4_gate=args.nvfp4_gate,
+    )
 
     prompts = args.prompt or [DEFAULT_PROMPT]
     input_ids, attention_mask, prompt_lengths = encode_prompts(tokenizer, prompts, device)

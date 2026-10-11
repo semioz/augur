@@ -6,6 +6,7 @@ from safetensors.torch import load_file
 from torch import Tensor
 
 from augur.config import QwenConfig
+from augur.nvfp4 import pack_nvfp4
 
 
 @dataclass(frozen=True)
@@ -20,6 +21,14 @@ class Linear:
 
 
 @dataclass(frozen=True)
+class NVFP4Linear:
+    packed: Tensor
+    scales: Tensor
+    global_scale: Tensor
+    bias: Tensor | None = None
+
+
+@dataclass(frozen=True)
 class Attention:
     q: Linear
     k: Linear
@@ -30,7 +39,7 @@ class Attention:
 
 @dataclass(frozen=True)
 class MLP:
-    gate: Linear
+    gate: Linear | NVFP4Linear
     up: Linear
     down: Linear
 
@@ -56,7 +65,18 @@ def load_weights(
     config: QwenConfig,
     device: torch.device | str = "cpu",
     dtype: torch.dtype = torch.float32,
+    *,
+    nvfp4_gate: bool = False,
 ) -> Weights:
+    if nvfp4_gate:
+        target = torch.device(device)
+        if (
+            target.type != "cuda"
+            or dtype != torch.float16
+            or not torch.cuda.is_available()
+            or torch.cuda.get_device_capability(target)[0] < 10
+        ):
+            raise ValueError("NVFP4 gate requires a Blackwell CUDA GPU and float16")
     sd = load_file(str(path))
 
     def to(name: str) -> Tensor:
@@ -71,6 +91,13 @@ def load_weights(
 
     def rms_norm(prefix: str) -> RMSNorm:
         return RMSNorm(weight=to(f"{prefix}.weight"))
+
+    def mlp_gate(prefix: str) -> Linear | NVFP4Linear:
+        gate = linear(prefix)
+        if not nvfp4_gate:
+            return gate
+        packed, scales, global_scale = pack_nvfp4(gate.weight)
+        return NVFP4Linear(packed, scales, global_scale, gate.bias)
 
     def attention(prefix: str) -> Attention:
         q = linear(f"{prefix}.q_proj")
@@ -106,7 +133,7 @@ def load_weights(
             self_attn=attention(f"model.layers.{i}.self_attn"),
             post_attention_layernorm=rms_norm(f"model.layers.{i}.post_attention_layernorm"),
             mlp=MLP(
-                gate=linear(f"model.layers.{i}.mlp.gate_proj"),
+                gate=mlp_gate(f"model.layers.{i}.mlp.gate_proj"),
                 up=linear(f"model.layers.{i}.mlp.up_proj"),
                 down=linear(f"model.layers.{i}.mlp.down_proj"),
             ),

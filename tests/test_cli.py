@@ -4,6 +4,11 @@ from types import SimpleNamespace
 from augur.cli import parse_args, run_bench_vllm
 
 
+def test_generate_accepts_optional_nvfp4_gate():
+    assert parse_args(["generate", "--nvfp4-gate"]).nvfp4_gate is True
+    assert parse_args(["generate"]).nvfp4_gate is False
+
+
 def test_parse_args_registers_vllm_benchmark_command() -> None:
     args = parse_args(
         [

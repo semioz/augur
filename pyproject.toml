@@ -22,6 +22,9 @@ dev = [
 kernel = [
     "triton>=3.0",
 ]
+cute = [
+    "nvidia-cutlass-dsl>=4.8; sys_platform == 'linux'",
+]
 
 [project.scripts]
 augur = "augur.cli:main"
